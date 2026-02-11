@@ -145,9 +145,10 @@ class ContentQualityScorer:
         content_density = len(text) / max(len(raw_html), 1) if raw_html else 0.5
         content_density_score = min(1.0, content_density * 3)
 
-        # Sentence length
-        sentences = re.split(r"[.!?]+", text)
-        sentences = [s.strip() for s in sentences if s.strip()]
+        # Sentence length (split on sentence-ending punctuation followed by space
+        # or end-of-string, to avoid splitting on abbreviations and decimals)
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 3]
         avg_sentence_length = sum(len(s.split()) for s in sentences) / max(
             len(sentences), 1
         )

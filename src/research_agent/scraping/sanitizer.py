@@ -76,6 +76,7 @@ class HTMLSanitizer:
     ]
 
     # Potential prompt injection boundary markers
+    # Patterns are specific enough to avoid false positives on common English words
     INJECTION_MARKERS: ClassVar[list[str]] = [
         r"<\|im_start\|>",
         r"<\|im_end\|>",
@@ -83,8 +84,8 @@ class HTMLSanitizer:
         r"\[/INST\]",
         r"<<SYS>>",
         r"<</SYS>>",
-        r"Human:",
-        r"Assistant:",
+        r"^\s*Human:\s*$",
+        r"^\s*Assistant:\s*$",
         r"<\|system\|>",
         r"<\|user\|>",
         r"<\|assistant\|>",
@@ -138,9 +139,9 @@ class HTMLSanitizer:
         # Detect and neutralize injection markers
         injection_count = 0
         for marker in self.INJECTION_MARKERS:
-            found = re.findall(marker, working)
+            found = re.findall(marker, working, flags=re.MULTILINE)
             injection_count += len(found)
-            working = re.sub(marker, "[REMOVED]", working)
+            working = re.sub(marker, "[REMOVED]", working, flags=re.MULTILINE)
 
         if injection_count > 0:
             logger.warning(
