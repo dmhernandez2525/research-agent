@@ -19,7 +19,9 @@
       <nav>
         <a href="#features">Features</a>
         <a href="#pipeline">How It Works</a>
+        <a href="#docs">Docs</a>
         <a href="#quickstart">Quick Start</a>
+        <a href="#about">About</a>
         <a href="https://github.com/dmhernandez2525/research-agent">GitHub</a>
       </nav>
     </div>
@@ -179,6 +181,124 @@
           <span class="tag">Three-tier model routing</span>
           <span class="tag">Fan-out / Fan-in</span>
           <span class="tag">Disk-first persistence</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== Docs ========== -->
+  <section class="docs" id="docs">
+    <div class="container">
+      <div class="section-heading">
+        <h2>Documentation</h2>
+        <p>Everything you need to configure and run Research Agent.</p>
+      </div>
+      <div class="docs-grid">
+        <div class="docs-card">
+          <h3>CLI Options</h3>
+          <div class="code-block">
+<pre><span class="command">research-agent</span> <span class="string">"query"</span> [OPTIONS]
+
+  <span class="comment">--depth</span>     Number of sub-questions (3-7)
+  <span class="comment">--model</span>     LLM model override
+  <span class="comment">--budget</span>    Max cost in USD (default: 2.00)
+  <span class="comment">--output</span>    Output file path
+  <span class="comment">--yes</span>       Auto-approve research plan
+  <span class="comment">--config</span>    Path to config.yaml</pre>
+          </div>
+        </div>
+        <div class="docs-card">
+          <h3>Configuration</h3>
+          <p>Four-layer resolution: defaults, <code>config.yaml</code>, environment variables, CLI arguments. Higher layers override lower ones.</p>
+          <div class="code-block">
+<pre><span class="comment"># config.yaml</span>
+llm:
+  provider: <span class="string">"anthropic"</span>
+  model: <span class="string">"claude-sonnet-4-5-20250929"</span>
+  temperature: <span class="string">0.1</span>
+
+search:
+  provider: <span class="string">"tavily"</span>
+  max_results: <span class="string">10</span>
+
+costs:
+  max_cost_per_run: <span class="string">2.00</span>
+  warn_at_percentage: <span class="string">80</span></pre>
+          </div>
+        </div>
+        <div class="docs-card">
+          <h3>Environment Variables</h3>
+          <div class="code-block">
+<pre><span class="comment"># Required</span>
+<span class="command">export</span> ANTHROPIC_API_KEY=<span class="string">your-key</span>
+<span class="command">export</span> TAVILY_API_KEY=<span class="string">your-key</span>
+
+<span class="comment"># Optional (multi-provider)</span>
+<span class="command">export</span> OPENAI_API_KEY=<span class="string">your-key</span>
+<span class="command">export</span> GOOGLE_API_KEY=<span class="string">your-key</span>
+
+<span class="comment"># Override nested config via env</span>
+LLM__MODEL=<span class="string">gpt-4o-mini</span> research-agent <span class="string">"query"</span></pre>
+          </div>
+        </div>
+        <div class="docs-card">
+          <h3>Resume &amp; Recovery</h3>
+          <p>Research Agent saves progress after every step. To resume an interrupted session, run the same query again:</p>
+          <div class="code-block">
+<pre><span class="comment"># First run (interrupted at step 3)</span>
+<span class="command">research-agent</span> <span class="string">"SaaS analysis"</span>
+<span class="comment"># ^C or crash</span>
+
+<span class="comment"># Resume from last checkpoint</span>
+<span class="command">research-agent</span> <span class="string">"SaaS analysis"</span>
+<span class="comment"># Output: Resuming from step 'scrape' (3/5)</span></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== About ========== -->
+  <section class="about" id="about">
+    <div class="container">
+      <div class="section-heading">
+        <h2>About</h2>
+        <p>Part of the "Apps That Build Apps" ecosystem.</p>
+      </div>
+      <div class="about-content">
+        <p>
+          Research Agent was built to eliminate the last manual bottleneck in an automated
+          software development pipeline. The "Apps That Build Apps" ecosystem uses AI agents
+          to generate project prompts, build scaffolding, and develop features &mdash; but the
+          research phase still required manually operating Claude.ai in a browser. Copy-pasting
+          prompts across sessions, saving outputs, chaining continuations, and losing all
+          progress when sessions timed out.
+        </p>
+        <p>
+          Research Agent replaces that entire manual workflow with a single command. It was
+          designed from the ground up for <strong>crash resilience</strong> (every step saves
+          to disk before moving on), <strong>unlimited output</strong> (synthesis reads files,
+          not context), and <strong>cost control</strong> (budget caps with graceful degradation
+          to cheaper models).
+        </p>
+        <p>
+          The architecture is informed by a comprehensive survey of 16+ open-source research
+          agents including LangChain Open Deep Research, ByteDance DeerFlow, GPT-Researcher,
+          and Stanford STORM. Key innovations adopted include the ExpandSearch pattern (34.3%
+          improvement over single-query baselines), observation masking (83.9% token savings),
+          and atomic checkpoint writes for crash resilience.
+        </p>
+        <div class="architecture-tags">
+          <span class="tag">Python 3.11+</span>
+          <span class="tag">LangGraph 1.0</span>
+          <span class="tag">Anthropic Claude</span>
+          <span class="tag">OpenAI</span>
+          <span class="tag">Tavily Search</span>
+          <span class="tag">Trafilatura</span>
+          <span class="tag">ChromaDB</span>
+          <span class="tag">pydantic-settings</span>
+          <span class="tag">Typer + Rich</span>
+          <span class="tag">structlog</span>
         </div>
       </div>
     </div>
