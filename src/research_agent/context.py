@@ -75,6 +75,7 @@ class ContextManager:
         self.window_size = window_size
         self.max_tokens = max_tokens
         self._turns: list[Turn] = []
+        self._compaction_pending = False
 
     @property
     def turns(self) -> list[Turn]:
@@ -102,8 +103,12 @@ class ContextManager:
         """
         self._turns.append(turn)
 
-        if self.total_tokens > self.max_tokens:
-            self.compact()
+        if self.total_tokens > self.max_tokens and not self._compaction_pending:
+            result = self.compact()
+            # If compaction freed less than 5% of tokens, don't retry until
+            # new turns are added (avoids O(n) scan on every add)
+            if result.turns_masked == 0:
+                self._compaction_pending = True
 
     def compact(self) -> CompactionResult:
         """Mask older tool outputs to reduce context size.
@@ -126,6 +131,9 @@ class ContextManager:
                 turn.token_count = 10  # approximate
                 turn.masked = True
                 turns_masked += 1
+
+        if turns_masked > 0:
+            self._compaction_pending = False
 
         result = CompactionResult(
             original_tokens=original_tokens,

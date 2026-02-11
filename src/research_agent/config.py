@@ -6,7 +6,7 @@ Uses pydantic-settings with YamlConfigSettingsSource for layered configuration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import (
@@ -146,8 +146,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    CONFIG_PATH: ClassVar[Path] = _DEFAULT_CONFIG_PATH
-
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     scraping: ScrapingSettings = Field(default_factory=ScrapingSettings)
@@ -201,6 +199,6 @@ class Settings(BaseSettings):
             Fully-resolved Settings instance.
         """
         if config_path is not None:
-            cls.CONFIG_PATH = config_path
+            overrides.setdefault("_yaml_file", str(config_path))
 
         return cls(**overrides)

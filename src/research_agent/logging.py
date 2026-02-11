@@ -58,12 +58,6 @@ def configure_logging(
         structlog.processors.UnicodeDecoder(),
     ]
 
-    if session_id:
-        shared_processors.insert(
-            0,
-            structlog.processors.EventRenamer("event"),
-        )
-
     renderer: structlog.types.Processor
     if fmt == "json":
         renderer = structlog.processors.JSONRenderer()
@@ -74,9 +68,8 @@ def configure_logging(
         processors=[
             *shared_processors,
             renderer,
-            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
