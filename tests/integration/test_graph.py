@@ -1,87 +1,162 @@
-"""Integration tests for the full LangGraph research agent graph."""
+"""Integration tests for graph construction and conditional edge routing."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 
-if TYPE_CHECKING:
-    from unittest.mock import MagicMock
+from research_agent.graph import (
+    _MAX_SEARCH_RETRIES,
+    _all_subtopics_done,
+    _should_continue_scrape,
+    _should_continue_search,
+    build_graph,
+)
 
-# TODO: Uncomment once the graph module is implemented.
-# from research_agent.graph import build_graph, run_graph
+if TYPE_CHECKING:
+    from research_agent.state import ResearchState
 
 pytestmark = pytest.mark.integration
 
 
-class TestFullGraphExecution:
-    """Run the complete research graph with mocked external APIs."""
-
-    @pytest.mark.skip(reason="TODO: Implement once research_agent.graph exists")
-    def test_graph_completes_without_error(
-        self,
-        sample_state: dict[str, Any],
-        sample_config: dict[str, Any],
-        mock_llm: MagicMock,
-    ) -> None:
-        """The graph should run to completion and return a final state."""
-        # TODO: Build the graph with mocked LLM and search APIs,
-        #       invoke it with sample_state, and assert the returned
-        #       state has a non-empty "report" field.
-
-    @pytest.mark.skip(reason="TODO: Implement once research_agent.graph exists")
-    def test_graph_respects_max_iterations(
-        self,
-        sample_state: dict[str, Any],
-        sample_config: dict[str, Any],
-        mock_llm: MagicMock,
-    ) -> None:
-        """The graph should stop after max_iterations even if quality is low."""
-        # TODO: Set max_iterations=1, run graph, and verify iteration
-        #       count in the final state is <= 1.
-
-    @pytest.mark.skip(reason="TODO: Implement once research_agent.graph exists")
-    def test_graph_budget_enforcement(
-        self,
-        sample_state: dict[str, Any],
-        sample_config: dict[str, Any],
-        mock_llm: MagicMock,
-    ) -> None:
-        """The graph should halt when the cost budget is exhausted."""
-        # TODO: Set a very low budget (0.001), mock expensive LLM calls,
-        #       run the graph, and assert it terminated due to budget.
+# ---- Graph construction ------------------------------------------------------
 
 
-class TestGraphNodeTransitions:
-    """Verify correct transitions between graph nodes."""
+class TestBuildGraph:
+    """Verify build_graph returns a well-formed StateGraph."""
 
-    @pytest.mark.skip(reason="TODO: Implement once research_agent.graph exists")
-    def test_planner_to_searcher_transition(
-        self,
-        sample_state: dict[str, Any],
-        mock_llm: MagicMock,
-    ) -> None:
-        """After planning, the graph should transition to the searcher node."""
-        # TODO: Build the graph, run a single step from the planner,
-        #       and verify the next node is "searcher".
+    @pytest.fixture()
+    def settings(self) -> MagicMock:
+        s = MagicMock()
+        s.checkpoints.enabled = False
+        return s
 
-    @pytest.mark.skip(reason="TODO: Implement once research_agent.graph exists")
-    def test_evaluator_triggers_revision(
-        self,
-        sample_state: dict[str, Any],
-        mock_llm: MagicMock,
-    ) -> None:
-        """If the evaluator scores the report low, the graph should loop back."""
-        # TODO: Mock the evaluator to return a low score, run the graph,
-        #       and verify that a second iteration occurred.
+    def test_returns_state_graph(self, settings: MagicMock) -> None:
+        graph = build_graph(settings)
+        assert graph is not None
 
-    @pytest.mark.skip(reason="TODO: Implement once research_agent.graph exists")
-    def test_evaluator_accepts_good_report(
-        self,
-        sample_state: dict[str, Any],
-        mock_llm: MagicMock,
-    ) -> None:
-        """If the evaluator scores the report high, the graph should end."""
-        # TODO: Mock the evaluator to return a high score, run the graph,
-        #       and verify it terminated after one iteration.
+    def test_graph_has_five_nodes(self, settings: MagicMock) -> None:
+        graph = build_graph(settings)
+        node_names = set(graph.nodes.keys())
+        expected = {"plan", "search", "scrape", "summarize", "synthesize"}
+        assert expected.issubset(node_names)
+
+    def test_graph_compiles(self, settings: MagicMock) -> None:
+        graph = build_graph(settings)
+        compiled = graph.compile()
+        assert compiled is not None
+
+
+# ---- _should_continue_search -------------------------------------------------
+
+
+class TestShouldContinueSearch:
+    """Conditional routing after search node."""
+
+    def test_routes_to_scrape_with_enough_results(self) -> None:
+        state: ResearchState = {
+            "search_results": [MagicMock()] * 5,
+            "search_retry_count": 0,
+        }
+        assert _should_continue_search(state) == "scrape"
+
+    def test_routes_to_search_with_insufficient_results(self) -> None:
+        state: ResearchState = {
+            "search_results": [MagicMock()],
+            "search_retry_count": 0,
+        }
+        assert _should_continue_search(state) == "search"
+
+    def test_routes_to_scrape_at_max_retries(self) -> None:
+        state: ResearchState = {
+            "search_results": [],
+            "search_retry_count": _MAX_SEARCH_RETRIES,
+        }
+        assert _should_continue_search(state) == "scrape"
+
+    def test_routes_to_scrape_above_max_retries(self) -> None:
+        state: ResearchState = {
+            "search_results": [],
+            "search_retry_count": _MAX_SEARCH_RETRIES + 1,
+        }
+        assert _should_continue_search(state) == "scrape"
+
+    def test_empty_state_retries(self) -> None:
+        state: ResearchState = {}
+        assert _should_continue_search(state) == "search"
+
+    def test_exactly_min_results_routes_to_scrape(self) -> None:
+        state: ResearchState = {
+            "search_results": [MagicMock()] * 3,
+            "search_retry_count": 0,
+        }
+        assert _should_continue_search(state) == "scrape"
+
+
+# ---- _should_continue_scrape ------------------------------------------------
+
+
+class TestShouldContinueScrape:
+    """Conditional routing after scrape node."""
+
+    def test_routes_to_summarize_with_content(self) -> None:
+        state: ResearchState = {"scraped_content": [MagicMock()]}
+        assert _should_continue_scrape(state) == "summarize"
+
+    def test_routes_to_end_without_content(self) -> None:
+        state: ResearchState = {"scraped_content": []}
+        result = _should_continue_scrape(state)
+        assert result == "__end__"
+
+    def test_empty_state_routes_to_end(self) -> None:
+        state: ResearchState = {}
+        result = _should_continue_scrape(state)
+        assert result == "__end__"
+
+
+# ---- _all_subtopics_done ----------------------------------------------------
+
+
+class TestAllSubtopicsDone:
+    """Conditional routing after summarize node for subtopic iteration."""
+
+    def test_routes_to_search_when_subtopics_remain(self) -> None:
+        state: ResearchState = {
+            "sub_questions": [MagicMock(), MagicMock(), MagicMock()],
+            "current_subtopic_index": 1,
+        }
+        assert _all_subtopics_done(state) == "search"
+
+    def test_routes_to_synthesize_when_all_done(self) -> None:
+        state: ResearchState = {
+            "sub_questions": [MagicMock(), MagicMock()],
+            "current_subtopic_index": 2,
+        }
+        assert _all_subtopics_done(state) == "synthesize"
+
+    def test_routes_to_synthesize_when_index_exceeds(self) -> None:
+        state: ResearchState = {
+            "sub_questions": [MagicMock()],
+            "current_subtopic_index": 5,
+        }
+        assert _all_subtopics_done(state) == "synthesize"
+
+    def test_empty_sub_questions_routes_to_synthesize(self) -> None:
+        state: ResearchState = {
+            "sub_questions": [],
+            "current_subtopic_index": 0,
+        }
+        assert _all_subtopics_done(state) == "synthesize"
+
+    def test_index_zero_with_subtopics_routes_to_search(self) -> None:
+        state: ResearchState = {
+            "sub_questions": [MagicMock()],
+            "current_subtopic_index": 0,
+        }
+        assert _all_subtopics_done(state) == "search"
+
+    def test_empty_state_routes_to_synthesize(self) -> None:
+        state: ResearchState = {}
+        assert _all_subtopics_done(state) == "synthesize"

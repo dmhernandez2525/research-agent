@@ -99,7 +99,7 @@ class ResearchState(TypedDict, total=False):
     # Iteration tracking
     current_subtopic_index: int
     search_retry_count: int
-    seen_urls: list[str]
+    seen_urls: Annotated[list[str], operator.add]
 
     # Planner output
     sub_questions: list[SubQuestion]

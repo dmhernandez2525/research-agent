@@ -1,7 +1,8 @@
 """LangGraph StateGraph definition for the research pipeline.
 
-Defines a 5-node graph: plan -> search -> scrape -> summarize -> synthesize
-with conditional edges and SqliteSaver checkpointing.
+Defines a 5-node graph with fan-out/fan-in subtopic iteration:
+    plan -> search -> [should_continue_search] -> scrape -> summarize
+                                                      -> [all_subtopics_done] -> search (loop) | synthesize -> END
 """
 
 from __future__ import annotations
@@ -9,7 +10,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 
 from research_agent.nodes.planner import plan_node
@@ -40,12 +40,6 @@ def _should_continue_search(state: ResearchState) -> str:
 
     Returns ``"scrape"`` if we have enough search results, otherwise
     ``"search"`` for a retry (up to ``_MAX_SEARCH_RETRIES``).
-
-    Args:
-        state: Current research state.
-
-    Returns:
-        Next node name.
     """
     min_results = 3
     results = state.get("search_results", [])
@@ -60,12 +54,6 @@ def _should_continue_scrape(state: ResearchState) -> str:
 
     Returns ``"summarize"`` if we have scraped content, otherwise routes
     to ``END`` with a warning.
-
-    Args:
-        state: Current research state.
-
-    Returns:
-        Next node name or END.
     """
     scraped = state.get("scraped_content", [])
     if scraped:
@@ -75,6 +63,28 @@ def _should_continue_scrape(state: ResearchState) -> str:
     return END
 
 
+def _all_subtopics_done(state: ResearchState) -> str:
+    """Decide whether to loop back to search or proceed to synthesis.
+
+    After summarizing the current subtopic, checks if more sub-questions
+    remain. If so, loops back to ``"search"`` for the next subtopic.
+    Otherwise, routes to ``"synthesize"`` for final report generation.
+    """
+    sub_questions = state.get("sub_questions", [])
+    current_idx = state.get("current_subtopic_index", 0)
+
+    if current_idx < len(sub_questions):
+        logger.info(
+            "next_subtopic",
+            index=current_idx,
+            remaining=len(sub_questions) - current_idx,
+        )
+        return "search"
+
+    logger.info("all_subtopics_complete", total=len(sub_questions))
+    return "synthesize"
+
+
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
@@ -82,6 +92,12 @@ def _should_continue_scrape(state: ResearchState) -> str:
 
 def build_graph(settings: Settings) -> StateGraph[Any]:
     """Construct the research StateGraph (uncompiled).
+
+    Graph topology:
+        plan -> search -> [should_continue_search] -> scrape | search (retry)
+                           scrape -> [should_continue_scrape] -> summarize | END
+                                      summarize -> [all_subtopics_done] -> search (loop) | synthesize
+                                                    synthesize -> END
 
     Args:
         settings: Application settings.
@@ -101,19 +117,31 @@ def build_graph(settings: Settings) -> StateGraph[Any]:
     # Set entry point
     graph.set_entry_point("plan")
 
-    # Edges
+    # plan -> search (always)
     graph.add_edge("plan", "search")
+
+    # search -> should_continue_search -> scrape or search (retry)
     graph.add_conditional_edges(
         "search",
         _should_continue_search,
         {"scrape": "scrape", "search": "search"},
     )
+
+    # scrape -> should_continue_scrape -> summarize or END (no content)
     graph.add_conditional_edges(
         "scrape",
         _should_continue_scrape,
         {"summarize": "summarize", END: END},
     )
-    graph.add_edge("summarize", "synthesize")
+
+    # summarize -> all_subtopics_done -> search (loop) or synthesize
+    graph.add_conditional_edges(
+        "summarize",
+        _all_subtopics_done,
+        {"search": "search", "synthesize": "synthesize"},
+    )
+
+    # synthesize -> END
     graph.add_edge("synthesize", END)
 
     return graph
@@ -134,6 +162,8 @@ def compile_graph(
     Returns:
         A compiled, runnable LangGraph graph.
     """
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
     graph = build_graph(settings)
 
     checkpointer: AsyncSqliteSaver | None = None
