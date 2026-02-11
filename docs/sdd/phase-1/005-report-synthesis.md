@@ -36,6 +36,8 @@ subtopic_summaries (all)
 
 **Why one-shot for Phase 1:** With a typical research run producing 3-5 subtopics, each summarized to 500-1000 tokens, the total input fits comfortably within context limits (under 10k tokens of summaries). One-shot avoids the complexity of multi-pass synthesis while producing coherent output.
 
+**~2,000 word glass ceiling:** Empirical testing shows that single-pass LLM generation reliably produces coherent output up to approximately 2,000 words. Beyond this threshold, quality degrades -- structure becomes repetitive, citations become inconsistent, and the model tends to lose track of earlier content. This is the primary motivation for the Phase 3 serial section-by-section approach.
+
 **Phase 3 upgrade:** Serial section-by-section synthesis will be added for long reports where summaries exceed context limits.
 
 ## Report Template Structure
@@ -101,6 +103,8 @@ Write a well-structured research report following this format:
 - Do not invent information not present in the summaries
 - Use clear, professional language
 - Prefer specific data points over vague statements
+- When sources disagree or contradict each other, explicitly note the disagreement and present both perspectives with their respective citations
+- Preserve information verbatim during intermediate synthesis steps -- do not paraphrase away specifics, numbers, or nuance (based on Open Deep Research's "preserve information verbatim" principle)
 """
 ```
 
@@ -210,13 +214,19 @@ def basic_quality_check(report: str, summaries: list[SubtopicSummary]) -> dict:
     return checks
 ```
 
-### Phase 2: LLM-as-Judge (Future)
+### Phase 2: LLM-as-Judge Self-Evaluation
 
-A second LLM call will score the report on:
-- **Coverage** (1-5): Does the report address all subtopics?
-- **Accuracy** (1-5): Are claims supported by the provided summaries?
-- **Coherence** (1-5): Does the report flow logically?
-- **Citation quality** (1-5): Are citations used appropriately?
+A second LLM call scores the report on five weighted dimensions:
+
+| Dimension | Weight | Description |
+|-----------|--------|-------------|
+| Factual Accuracy | 30% | Are claims supported by the provided summaries? No hallucinated facts. |
+| Completeness | 25% | Does the report address all subtopics with sufficient depth? |
+| Coverage | 20% | Are diverse perspectives and sources represented? |
+| Coherence | 15% | Does the report flow logically with smooth transitions? |
+| Bias | 10% | Is the report balanced and free from unwarranted bias? |
+
+Each dimension is scored 1-5. The weighted composite score must meet a threshold of **3.5/5.0** to pass. If the score falls below this threshold, the system triggers an automatic revision cycle where the evaluation feedback is fed back into the synthesis prompt. Up to **2 auto-revision cycles** are attempted before accepting the best-scoring version.
 
 ## Synthesize Node Implementation
 
