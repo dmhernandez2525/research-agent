@@ -70,11 +70,12 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
 }
 
 # Tier transition thresholds (percentage of max budget consumed)
+# Per ARCHITECTURE.md: FULL -> REDUCED at 80% -> CACHED at 95% -> PARTIAL at 100%
 _TIER_THRESHOLDS: dict[DegradationTier, float] = {
     DegradationTier.FULL: 0.0,
-    DegradationTier.REDUCED: 60.0,
-    DegradationTier.CACHED: 80.0,
-    DegradationTier.PARTIAL: 95.0,
+    DegradationTier.REDUCED: 80.0,
+    DegradationTier.CACHED: 95.0,
+    DegradationTier.PARTIAL: 100.0,
 }
 
 
@@ -147,6 +148,25 @@ class BudgetTracker:
         """
         input_price, output_price = MODEL_PRICING.get(model, (5.0, 15.0))
         return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
+
+    def check_budget(self, estimated_cost: float = 0.0) -> None:
+        """Pre-call budget check. Raises before spending.
+
+        Args:
+            estimated_cost: Estimated cost of the upcoming call in USD.
+
+        Raises:
+            BudgetExhaustedError: If budget would be exceeded.
+        """
+        projected = self.total_cost + estimated_cost
+        if projected >= self.max_cost_usd:
+            raise BudgetExhaustedError(
+                f"Budget would be exceeded: ${projected:.4f} >= ${self.max_cost_usd:.2f}"
+            )
+        if self.total_calls >= self.max_llm_calls:
+            raise BudgetExhaustedError(
+                f"LLM call limit reached: {self.total_calls} >= {self.max_llm_calls}"
+            )
 
     def record_call(self, record: LLMCallRecord) -> None:
         """Record an LLM call and check budget thresholds.

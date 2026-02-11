@@ -83,14 +83,23 @@ class ErrorEntry(BaseModel):
 class ResearchState(TypedDict, total=False):
     """Top-level state flowing through the LangGraph research pipeline.
 
+    ``total=False`` is intentional: LangGraph nodes return partial state
+    updates containing only the fields they modify. The graph engine
+    merges these partial updates into the full state.
+
     List fields use ``Annotated[list, operator.add]`` so that each node can
     *append* to the list rather than replacing it.
     """
 
-    # Core query
+    # Core query -- required fields
     query: str
     step: str
     step_index: int
+
+    # Iteration tracking
+    current_subtopic_index: int
+    search_retry_count: int
+    seen_urls: list[str]
 
     # Planner output
     sub_questions: list[SubQuestion]
