@@ -74,7 +74,8 @@ class ResearchEmbeddings:
     """
 
     DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5"
-    DEFAULT_DEDUP_THRESHOLD = 0.92
+    DEFAULT_CONTENT_DEDUP_THRESHOLD = 0.85
+    DEFAULT_EXACT_DEDUP_THRESHOLD = 0.95
 
     def __init__(
         self,
@@ -82,7 +83,8 @@ class ResearchEmbeddings:
         persist_directory: Path | str = "./data/chromadb",
         model_name: str = DEFAULT_MODEL,
         dimensions: int = 768,
-        dedup_threshold: float = DEFAULT_DEDUP_THRESHOLD,
+        content_dedup_threshold: float = DEFAULT_CONTENT_DEDUP_THRESHOLD,
+        exact_dedup_threshold: float = DEFAULT_EXACT_DEDUP_THRESHOLD,
     ) -> None:
         """Initialize the embeddings manager.
 
@@ -91,13 +93,15 @@ class ResearchEmbeddings:
             persist_directory: Directory for ChromaDB persistence.
             model_name: Sentence-transformers model identifier.
             dimensions: Embedding vector dimensions.
-            dedup_threshold: Similarity threshold for duplicate detection.
+            content_dedup_threshold: Cosine similarity for content-level dedup (0.85).
+            exact_dedup_threshold: Cosine similarity for exact-match dedup (0.95).
         """
         self.collection_name = collection_name
         self.persist_directory = str(persist_directory)
         self.model_name = model_name
         self.dimensions = dimensions
-        self.dedup_threshold = dedup_threshold
+        self.content_dedup_threshold = content_dedup_threshold
+        self.exact_dedup_threshold = exact_dedup_threshold
 
         self._client: Any = None  # chromadb.ClientAPI (lazy-loaded)
         self._collection: Any = None  # chromadb.Collection (lazy-loaded)

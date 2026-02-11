@@ -237,12 +237,17 @@ class CheckpointManager:
         return metas
 
     def _rotate(self) -> None:
-        """Remove oldest checkpoints exceeding ``max_checkpoints``."""
+        """Remove oldest checkpoints exceeding ``max_checkpoints``.
+
+        Always retains at least 2 checkpoints regardless of configuration
+        to prevent total state loss if the most recent checkpoint is corrupt.
+        """
+        effective_max = max(self.max_checkpoints, 2)
         checkpoints = self.list_checkpoints()
-        if len(checkpoints) <= self.max_checkpoints:
+        if len(checkpoints) <= effective_max:
             return
 
-        for old in checkpoints[self.max_checkpoints :]:
+        for old in checkpoints[effective_max:]:
             cp_path = self._checkpoint_path(old.checkpoint_id)
             meta_path = self._metadata_path(old.checkpoint_id)
             for path in (cp_path, meta_path):
@@ -259,13 +264,16 @@ class CheckpointManager:
             data: Bytes to write.
         """
         fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        fd_closed = False
         try:
             os.write(fd, data)
             os.fsync(fd)
             os.close(fd)
+            fd_closed = True
             os.replace(tmp_path, str(path))
         except BaseException:
-            os.close(fd) if not os.get_inheritable(fd) else None  # best-effort
+            if not fd_closed:
+                os.close(fd)
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
             raise

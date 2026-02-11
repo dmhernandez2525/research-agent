@@ -25,7 +25,9 @@ class DimensionScore(BaseModel):
     """Score for a single evaluation dimension."""
 
     dimension: str = Field(description="Name of the evaluation dimension.")
-    score: float = Field(ge=0.0, le=10.0, description="Score on a 0-10 scale.")
+    score: float = Field(
+        ge=1.0, le=5.0, description="Score on a 1-5 scale per SDD-005."
+    )
     weight: float = Field(
         ge=0.0, le=1.0, description="Weight of this dimension in the overall score."
     )
@@ -51,7 +53,7 @@ class EvaluationResult(BaseModel):
         default_factory=list, description="Per-dimension scores."
     )
     overall_score: float = Field(
-        default=0.0, ge=0.0, le=10.0, description="Weighted overall score (0-10)."
+        default=0.0, ge=0.0, le=5.0, description="Weighted overall score (1-5)."
     )
     overall_reasoning: str = Field(
         default="", description="High-level assessment of the report."
@@ -75,6 +77,13 @@ EVALUATION_DIMENSIONS: list[tuple[str, float]] = [
     ("Bias", 0.10),
 ]
 """Evaluation dimensions with their weights (must sum to 1.0)."""
+
+QUALITY_THRESHOLD: float = 3.5
+"""Minimum weighted overall score (1-5) for a report to pass evaluation.
+Reports below this trigger up to 2 auto-revision cycles per SDD-005."""
+
+MAX_REVISION_CYCLES: int = 2
+"""Maximum number of auto-revision attempts for reports below threshold."""
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +178,7 @@ class ReportEvaluator:
         lines: list[str] = [
             "# Evaluation Scorecard",
             f"**Query:** {result.query}",
-            f"**Overall Score:** {result.overall_score:.1f}/10.0",
+            f"**Overall Score:** {result.overall_score:.1f}/5.0",
             "",
             "| Dimension | Score | Weight | Weighted |",
             "|-----------|-------|--------|----------|",

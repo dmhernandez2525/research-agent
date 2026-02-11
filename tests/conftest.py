@@ -58,7 +58,6 @@ def sample_config() -> dict[str, Any]:
     For now we return a plain dict mirroring *config.yaml* with values
     suitable for fast, offline testing.
     """
-    # TODO: Replace dict with ``Settings(...)`` once the model exists.
     return {
         "llm": {
             "provider": "anthropic",
@@ -121,21 +120,20 @@ def sample_config() -> dict[str, Any]:
 def sample_state() -> dict[str, Any]:
     """Return a minimal ResearchState dict for testing.
 
-    Once ``research_agent.state.ResearchState`` is implemented, this
-    should return an actual model instance.
+    Field names match the ``ResearchState`` TypedDict in
+    ``research_agent.state``.
     """
-    # TODO: Replace dict with ``ResearchState(...)`` once the model exists.
     return {
         "query": "What are the latest advances in retrieval-augmented generation?",
-        "sub_queries": [],
+        "step": "plan",
+        "step_index": 0,
+        "sub_questions": [],
         "search_results": [],
         "scraped_content": [],
         "summaries": [],
-        "report": "",
-        "iteration": 0,
-        "max_iterations": 3,
-        "cost_so_far": 0.0,
-        "checkpoint_id": None,
+        "final_report": "",
+        "sources": [],
+        "error_log": [],
     }
 
 

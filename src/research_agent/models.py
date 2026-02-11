@@ -11,12 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from pydantic import BaseModel, Field
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -159,12 +153,6 @@ class ModelRouter:
 
         return self._model_cache[cache_key]
 
-    @retry(
-        retry=retry_if_exception_type(Exception),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
-        reraise=True,
-    )
     async def invoke_with_fallback(
         self,
         tier: ModelTier,
@@ -173,8 +161,9 @@ class ModelRouter:
     ) -> Any:
         """Invoke a model with tier-based fallback and retry.
 
-        Tries each model in the tier's fallback chain. Uses tenacity for
-        per-model retries with exponential backoff.
+        Tries each model in the tier's fallback chain. Each model is
+        retried individually (3 attempts with exponential backoff) before
+        falling to the next model in the chain.
 
         Args:
             tier: The model tier to use.

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, StateGraph
 
 from research_agent.nodes.planner import plan_node
@@ -32,11 +32,14 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
+_MAX_SEARCH_RETRIES = 3
+
+
 def _should_continue_search(state: ResearchState) -> str:
     """Decide whether to proceed to scraping or retry search.
 
     Returns ``"scrape"`` if we have enough search results, otherwise
-    ``"search"`` for a retry (up to a maximum).
+    ``"search"`` for a retry (up to ``_MAX_SEARCH_RETRIES``).
 
     Args:
         state: Current research state.
@@ -46,7 +49,8 @@ def _should_continue_search(state: ResearchState) -> str:
     """
     min_results = 3
     results = state.get("search_results", [])
-    if len(results) >= min_results:
+    retries = state.get("search_retry_count", 0)
+    if len(results) >= min_results or retries >= _MAX_SEARCH_RETRIES:
         return "scrape"
     return "search"
 
@@ -132,11 +136,11 @@ def compile_graph(
     """
     graph = build_graph(settings)
 
-    checkpointer: SqliteSaver | None = None
+    checkpointer: AsyncSqliteSaver | None = None
     if settings.checkpoints.enabled:
         db_path = checkpoint_db or (settings.checkpoints.directory / "langgraph.db")
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        checkpointer = SqliteSaver.from_conn_string(str(db_path))
+        checkpointer = AsyncSqliteSaver.from_conn_string(str(db_path))
         logger.info("checkpointer_enabled", db_path=str(db_path))
 
     return graph.compile(checkpointer=checkpointer)
