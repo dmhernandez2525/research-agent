@@ -21,18 +21,22 @@
 |---------|----------|--------|--------------|---------------------|
 | Atomic file-based checkpoints | P0 | M | Phase 1 checkpoint | Per-subtask JSON files written atomically (temp -> fsync -> replace); SHA-256 verified |
 | Observation masking | P1 | M | StateGraph | Raw scraped content replaced with summaries after summarize node; state size stays bounded |
-| Graceful degradation (4-tier) | P0 | M | Model routing | Tier 1: retry -> Tier 2: fallback model -> Tier 3: skip subtopic -> Tier 4: partial report |
+| Graceful degradation (4-tier) | P0 | M | Model routing | FULL: all models at full capability, all sources searched -> REDUCED (80% budget): cheaper models, fewer sources per sub-question -> CACHED (95% budget or 5 consecutive failures): synthesize from already-gathered data only, no new API calls -> PARTIAL: generate whatever report is possible from current findings |
 | Budget tracking and cost caps | P0 | S | Model routing | Tracks cumulative cost per run; halts execution at max_cost_per_run; warns at threshold |
 | Self-evaluation (LLM-as-judge) | P1 | M | Synthesis | Scores report on coverage, accuracy, coherence (1-5 scale); logged with report |
 | Prompt caching optimization | P2 | S | Model routing | Enables prompt caching headers for Anthropic; uses cached_tokens for OpenAI |
-| Content quality scoring | P1 | S | Scraping | Scores scraped content before LLM processing; drops content below 0.3 threshold |
+| Content quality scoring | P1 | S | Scraping | Scores scraped content before LLM processing; drops content below 0.4 threshold |
 | Structured logging (structlog) | P1 | M | None | JSON-formatted logs with provenance chain; each step logs parent_id and step_id |
+| DiskCache for LLM response dedup | P1 | S | Model routing | Caches LLM responses keyed by (prompt_hash, model, temperature); avoids redundant API calls on retries and reruns |
+| Prompt versioning | P1 | S | Configuration | Tracks prompt template versions via hash; invalidates cached LLM responses when prompts change |
+| Adaptive rate limiting | P1 | M | Model routing | Dynamically adjusts request rate based on 429/5xx response frequency; backs off and recovers automatically |
+| Paywall detection | P1 | S | Scraping | Detects paywalled or login-gated content during scraping; skips and marks source as inaccessible rather than ingesting partial content |
 
 ## Phase 3: Advanced Features
 
 | Feature | Priority | Effort | Dependencies | Acceptance Criteria |
 |---------|----------|--------|--------------|---------------------|
-| ChromaDB vector store | P0 | M | Phase 2 | Stores document embeddings; deduplicates content with cosine similarity > 0.92 threshold |
+| ChromaDB vector store | P0 | M | Phase 2 | Stores document embeddings; deduplicates with dual thresholds: 0.85 cosine similarity for content dedup, 0.95 for exact dedup |
 | nomic-embed-text-v1.5 embeddings | P0 | M | ChromaDB | Generates 768-dim embeddings locally; no API calls required for embedding |
 | Serial section-by-section synthesis | P1 | L | Synthesis node | Synthesizes report section-by-section to handle long context; maintains coherence across sections |
 | Crawl4AI for JS-heavy sites | P1 | M | Scraping | Falls back to Crawl4AI when trafilatura returns low-quality content from JS-rendered pages |

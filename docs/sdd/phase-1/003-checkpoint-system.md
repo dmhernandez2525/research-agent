@@ -133,7 +133,7 @@ def load_checkpoint(path: Path) -> dict:
 
 ## Schema Evolution with Lazy Migration
 
-As `ResearchState` changes across versions, checkpoints from older versions must still load. The system uses lazy migration:
+As `ResearchState` changes across versions, checkpoints from older versions must still load. The system uses lazy migration rather than relying on LangGraph's built-in checkpoint schema management, which has known limitations around schema evolution (see LangGraph GitHub Issue #536 -- schema evolution remains unsolved in the framework's native `SqliteSaver`/`PostgresSaver`). A custom checkpoint layer gives us full control over migration logic and avoids coupling to LangGraph's internal serialization format.
 
 ```python
 CURRENT_SCHEMA_VERSION = 1
@@ -194,8 +194,12 @@ def recover_checkpoint(run_dir: Path) -> dict | None:
 
 To avoid unbounded disk usage, only the N most recent checkpoints are retained (default: 5, configured via `checkpoints.max_checkpoints`):
 
+**Safety rule:** Always keep >= 2 checkpoints to prevent total state loss. If the most recent checkpoint is corrupted (partial write during crash, disk error), the system must have at least one older checkpoint to fall back to. The rotation logic enforces this minimum regardless of configuration.
+
 ```python
 def rotate_checkpoints(run_dir: Path, max_keep: int = 5) -> None:
+    # Safety: never keep fewer than 2 checkpoints
+    max_keep = max(max_keep, 2)
     checkpoints = sorted(run_dir.glob("checkpoint_*.json"))
     to_remove = checkpoints[:-max_keep] if len(checkpoints) > max_keep else []
     for cp_path in to_remove:
