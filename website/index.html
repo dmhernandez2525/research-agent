@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Research Agent - Crash-Resilient Deep Research</title>
+  <meta name="description" content="Replace hours of manual research with a single command. Crash-resilient, no character limits, fully automated deep research tool." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+
+  <!-- ========== Header ========== -->
+  <header class="site-header">
+    <div class="container">
+      <a href="#" class="site-logo"><span>&gt;</span> research-agent</a>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#pipeline">How It Works</a>
+        <a href="#quickstart">Quick Start</a>
+        <a href="https://github.com/dmhernandez2525/research-agent">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ========== Hero ========== -->
+  <section class="hero" id="hero">
+    <div class="container">
+      <div class="hero-content">
+        <span class="hero-badge">pip install research-agent</span>
+        <h1><span class="accent">Research Agent</span></h1>
+        <p class="subtitle">Crash-resilient deep research, locally run.</p>
+        <p class="description">
+          Replace hours of manual Claude.ai research with a single command.
+          Crash-resilient, no character limits, fully automated.
+        </p>
+        <div class="hero-actions">
+          <a href="#quickstart" class="btn btn-primary">Get Started</a>
+          <a href="https://github.com/dmhernandez2525/research-agent" class="btn btn-secondary">View on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== Features ========== -->
+  <section class="features" id="features">
+    <div class="container">
+      <div class="section-heading">
+        <h2>Why Research Agent?</h2>
+        <p>Built for reliability and depth. Every step is saved to disk so nothing is ever lost.</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-accent);">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <h3>Crash Resilient</h3>
+          <p>Checkpoints after every step. Resume exactly where you left off after any failure &mdash; network errors, rate limits, or unexpected crashes.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-accent);">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+            </svg>
+          </div>
+          <h3>No Character Limits</h3>
+          <p>Reports can be any length. Each sub-task saves to disk independently, so you are never bound by context windows or output caps.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-accent);">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+          </div>
+          <h3>Automated Pipeline</h3>
+          <p>One command triggers the full research pipeline. Output feeds directly into your build process &mdash; no copy-pasting required.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== Pipeline ========== -->
+  <section class="pipeline" id="pipeline">
+    <div class="container">
+      <div class="section-heading">
+        <h2>How It Works</h2>
+        <p>A five-stage pipeline that fans out for parallel research and fans back in for synthesis.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <div class="step-content">
+            <h3>Plan</h3>
+            <p>Decomposes your query into 3&ndash;7 independent sub-questions, each targeting a distinct angle of your research topic.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <div class="step-content">
+            <h3>Search</h3>
+            <p>Tavily semantic search generates 3 query variations per sub-question, maximizing coverage across sources.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <div class="step-content">
+            <h3>Scrape</h3>
+            <p>Trafilatura content extraction pulls clean text from each URL, with quality scoring to filter noise.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">4</div>
+          <div class="step-content">
+            <h3>Analyze</h3>
+            <p>Per-subtask summarization with context management distills findings into structured, sourced notes.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-number">5</div>
+          <div class="step-content">
+            <h3>Synthesize</h3>
+            <p>Final report generation reads all findings from disk and produces a comprehensive, citation-backed document.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== Quick Start ========== -->
+  <section class="quickstart" id="quickstart">
+    <div class="container">
+      <div class="section-heading">
+        <h2>Quick Start</h2>
+        <p>Up and running in under a minute.</p>
+      </div>
+      <div class="quickstart-block">
+        <div class="code-block">
+<pre><span class="comment"># Install</span>
+<span class="command">pip install</span> research-agent
+
+<span class="comment"># Configure</span>
+<span class="command">export</span> ANTHROPIC_API_KEY=<span class="string">your-key</span>
+<span class="command">export</span> TAVILY_API_KEY=<span class="string">your-key</span>
+
+<span class="comment"># Research</span>
+<span class="command">research-agent</span> <span class="string">"Best practices for building SaaS in 2026"</span></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== Architecture ========== -->
+  <section class="architecture" id="architecture">
+    <div class="container">
+      <div class="section-heading">
+        <h2>Architecture</h2>
+        <p>Designed for resilience at every layer.</p>
+      </div>
+      <div class="architecture-content">
+        <p>
+          Research Agent uses a <strong>fan-out / fan-in</strong> pattern built on LangGraph.
+          Your query fans out into independent sub-tasks that run in parallel, each with its own
+          checkpoint saved to disk. Results fan back in for final synthesis. A three-tier model
+          routing system assigns the right model size to each stage &mdash; fast models for planning
+          and searching, capable models for analysis and synthesis.
+        </p>
+        <p>
+          Every step persists its output before moving on. If anything fails, the pipeline
+          resumes from the last successful checkpoint. No work is ever repeated.
+        </p>
+        <div class="architecture-tags">
+          <span class="tag">LangGraph</span>
+          <span class="tag">Checkpoint-per-step</span>
+          <span class="tag">Three-tier model routing</span>
+          <span class="tag">Fan-out / Fan-in</span>
+          <span class="tag">Disk-first persistence</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== Footer ========== -->
+  <footer class="site-footer">
+    <div class="container">
+      <p>
+        Research Agent is part of the
+        <a href="https://github.com/dmhernandez2525">Apps That Build Apps</a>
+        ecosystem.
+      </p>
+    </div>
+  </footer>
+
+</body>
+</html>

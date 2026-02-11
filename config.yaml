@@ -1,0 +1,48 @@
+llm:
+  provider: "anthropic"           # anthropic | openai | google
+  model: "claude-sonnet-4-5-20250929"
+  temperature: 0.1
+  max_tokens: 4096
+  timeout: 120
+  retries: 3
+
+search:
+  provider: "tavily"              # tavily | serper | searxng
+  max_results: 10
+  search_depth: "advanced"
+
+scraping:
+  engine: "trafilatura"
+  timeout: 30
+  max_concurrent: 5
+  max_content_length: 500000
+
+embedding:
+  provider: "sentence_transformers"
+  model: "nomic-ai/nomic-embed-text-v1.5"
+  dimensions: 768
+
+vector_store:
+  persist_directory: "./data/chromadb"
+  collection_name: "research_docs"
+
+costs:
+  max_cost_per_run: 2.00          # USD
+  max_llm_calls_per_run: 50
+  warn_at_percentage: 80
+
+checkpoints:
+  enabled: true
+  directory: "./data/checkpoints"
+  save_interval: 5
+  max_checkpoints: 5
+
+report:
+  output_dir: "./reports"
+  format: "markdown"
+  max_length: 10000
+
+logging:
+  level: "INFO"
+  format: "console"               # console | json
+  file: null
