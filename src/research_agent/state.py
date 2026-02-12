@@ -7,7 +7,7 @@ accumulation across graph nodes.
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -118,6 +118,9 @@ class ResearchState(TypedDict, total=False):
 
     # Provenance
     sources: Annotated[list[Source], operator.add]
+
+    # Report quality metadata
+    report_metadata: dict[str, Any]
 
     # Error tracking (accumulates)
     error_log: Annotated[list[ErrorEntry], operator.add]
