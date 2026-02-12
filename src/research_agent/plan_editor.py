@@ -135,6 +135,13 @@ def yaml_to_plan(content: str) -> EditedPlan | None:
     if not raw_sqs or not isinstance(raw_sqs, list):
         return None
 
+    # Normalize None values to empty strings (YAML maps bare keys to None)
+    for sq in raw_sqs:
+        if isinstance(sq, dict):
+            for key in ("question", "rationale"):
+                if sq.get(key) is None:
+                    sq[key] = ""
+
     try:
         return EditedPlan(sub_questions=raw_sqs)
     except Exception:
