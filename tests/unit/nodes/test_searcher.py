@@ -1,4 +1,4 @@
-"""Unit tests for research_agent.nodes.searcher - Tavily search with ExpandSearch."""
+"""Unit tests for research_agent.nodes.searcher - search with ExpandSearch + URL dedup."""
 
 from __future__ import annotations
 
@@ -10,9 +10,11 @@ import pytest
 from research_agent.nodes.searcher import (
     _EXPAND_SYSTEM_PROMPT,
     _MIN_RELEVANCE_SCORE,
+    _TRACKING_PARAMS,
     ExpandedQueries,
     _deduplicate_results,
     _expand_queries,
+    _normalize_url,
     _parse_results,
     execute_search,
     search_node,
@@ -127,7 +129,7 @@ class TestParseResults:
 
 
 class TestDeduplicateResults:
-    """URL-based deduplication within a batch."""
+    """URL-based deduplication within a batch (uses normalized URLs)."""
 
     def test_removes_duplicates(self) -> None:
         results = [
@@ -167,6 +169,164 @@ class TestDeduplicateResults:
             "https://a.com",
             "https://b.com",
         ]
+
+    def test_deduplicates_with_trailing_slash_difference(self) -> None:
+        results = [
+            SearchResult(
+                sub_question_id=1, query="q", url="https://a.com/page", score=0.9
+            ),
+            SearchResult(
+                sub_question_id=1, query="q", url="https://a.com/page/", score=0.7
+            ),
+        ]
+        unique = _deduplicate_results(results)
+        assert len(unique) == 1
+
+    def test_deduplicates_with_tracking_param_difference(self) -> None:
+        results = [
+            SearchResult(
+                sub_question_id=1, query="q", url="https://a.com/page", score=0.9
+            ),
+            SearchResult(
+                sub_question_id=1,
+                query="q",
+                url="https://a.com/page?utm_source=google",
+                score=0.7,
+            ),
+        ]
+        unique = _deduplicate_results(results)
+        assert len(unique) == 1
+
+    def test_deduplicates_with_fragment_difference(self) -> None:
+        results = [
+            SearchResult(
+                sub_question_id=1, query="q", url="https://a.com/page", score=0.9
+            ),
+            SearchResult(
+                sub_question_id=1,
+                query="q",
+                url="https://a.com/page#section",
+                score=0.7,
+            ),
+        ]
+        unique = _deduplicate_results(results)
+        assert len(unique) == 1
+
+    def test_deduplicates_with_case_difference(self) -> None:
+        results = [
+            SearchResult(
+                sub_question_id=1, query="q", url="https://A.COM/page", score=0.9
+            ),
+            SearchResult(
+                sub_question_id=1, query="q", url="https://a.com/page", score=0.7
+            ),
+        ]
+        unique = _deduplicate_results(results)
+        assert len(unique) == 1
+
+
+# ---- _normalize_url ----------------------------------------------------------
+
+
+class TestNormalizeUrl:
+    """URL normalization for deduplication."""
+
+    def test_lowercases_scheme_and_host(self) -> None:
+        assert _normalize_url("HTTPS://EXAMPLE.COM/Path") == "https://example.com/Path"
+
+    def test_strips_trailing_slash(self) -> None:
+        assert _normalize_url("https://a.com/page/") == "https://a.com/page"
+
+    def test_keeps_root_slash(self) -> None:
+        result = _normalize_url("https://a.com/")
+        assert result == "https://a.com/"
+
+    def test_removes_fragment(self) -> None:
+        result = _normalize_url("https://a.com/page#section")
+        assert "#" not in result
+        assert result == "https://a.com/page"
+
+    def test_removes_utm_params(self) -> None:
+        url = "https://a.com/page?utm_source=google&utm_medium=cpc&id=123"
+        result = _normalize_url(url)
+        assert "utm_source" not in result
+        assert "utm_medium" not in result
+        assert "id=123" in result
+
+    def test_removes_fbclid(self) -> None:
+        url = "https://a.com/page?fbclid=abc123&real=yes"
+        result = _normalize_url(url)
+        assert "fbclid" not in result
+        assert "real=yes" in result
+
+    def test_removes_gclid(self) -> None:
+        url = "https://a.com/page?gclid=xyz&q=test"
+        result = _normalize_url(url)
+        assert "gclid" not in result
+        assert "q=test" in result
+
+    def test_removes_multiple_tracking_params(self) -> None:
+        url = "https://a.com?utm_source=x&fbclid=y&gclid=z&msclkid=w&real=1"
+        result = _normalize_url(url)
+        assert "utm_source" not in result
+        assert "fbclid" not in result
+        assert "gclid" not in result
+        assert "msclkid" not in result
+        assert "real=1" in result
+
+    def test_sorts_remaining_params(self) -> None:
+        url = "https://a.com?z=3&a=1&m=2"
+        result = _normalize_url(url)
+        assert "a=1&m=2&z=3" in result
+
+    def test_preserves_meaningful_params(self) -> None:
+        url = "https://a.com/search?q=test&page=2&lang=en"
+        result = _normalize_url(url)
+        assert "q=test" in result
+        assert "page=2" in result
+        assert "lang=en" in result
+
+    def test_no_query_string(self) -> None:
+        assert _normalize_url("https://a.com/page") == "https://a.com/page"
+
+    def test_empty_query_string_after_tracking_removal(self) -> None:
+        url = "https://a.com/page?utm_source=google"
+        result = _normalize_url(url)
+        assert result == "https://a.com/page"
+
+    def test_combined_normalizations(self) -> None:
+        url = "HTTPS://EXAMPLE.COM/Article/#intro?utm_source=twitter&id=42"
+        result = _normalize_url(url)
+        assert result.startswith("https://example.com")
+        assert "#" not in result
+
+    def test_tracking_params_regex_covers_common_trackers(self) -> None:
+        common_trackers = [
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_content",
+            "utm_term",
+            "fbclid",
+            "gclid",
+            "gclsrc",
+            "dclid",
+            "msclkid",
+            "mc_cid",
+            "mc_eid",
+            "wbraid",
+            "gbraid",
+            "_ga",
+            "_gid",
+            "_gl",
+        ]
+        for param in common_trackers:
+            assert _TRACKING_PARAMS.match(param), f"{param} not matched"
+
+    def test_tracking_params_case_insensitive(self) -> None:
+        assert _TRACKING_PARAMS.match("UTM_SOURCE")
+        assert _TRACKING_PARAMS.match("Fbclid")
+        assert _TRACKING_PARAMS.match("GCLID")
 
 
 # ---- ExpandedQueries model --------------------------------------------------
@@ -435,6 +595,68 @@ class TestSearchNode:
 
         urls = [r.url for r in result["search_results"]]
         assert "https://example.com/rag-intro" not in urls
+
+    @pytest.mark.asyncio()
+    async def test_filters_seen_urls_with_normalization(self) -> None:
+        """Cross-subtopic dedup treats normalized URLs as equal."""
+        state: dict[str, Any] = {
+            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "current_subtopic_index": 0,
+            # Previously seen URL with trailing slash
+            "seen_urls": ["https://example.com/page/"],
+        }
+        # Search returns same page without trailing slash + tracking param
+        mock_response = [
+            {
+                "url": "https://example.com/page?utm_source=twitter",
+                "title": "T",
+                "content": "C",
+                "score": 0.9,
+            },
+            {
+                "url": "https://other.com/new",
+                "title": "New",
+                "content": "C2",
+                "score": 0.8,
+            },
+        ]
+        with patch(
+            "research_agent.nodes.searcher._tavily_search_with_retry",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await search_node(state)
+
+        # The page URL should be filtered (matches normalized seen URL)
+        urls = [r.url for r in result["search_results"]]
+        assert "https://example.com/page?utm_source=twitter" not in urls
+        assert "https://other.com/new" in urls
+
+    @pytest.mark.asyncio()
+    async def test_seen_urls_are_normalized(self) -> None:
+        """New seen_urls in output are normalized for future comparisons."""
+        state: dict[str, Any] = {
+            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "current_subtopic_index": 0,
+            "seen_urls": [],
+        }
+        mock_response = [
+            {
+                "url": "https://EXAMPLE.COM/Page/?utm_source=google#frag",
+                "title": "T",
+                "content": "C",
+                "score": 0.9,
+            },
+        ]
+        with patch(
+            "research_agent.nodes.searcher._tavily_search_with_retry",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            result = await search_node(state)
+
+        # Output seen_urls should be normalized
+        assert result["seen_urls"] == ["https://example.com/Page"]
 
     @pytest.mark.asyncio()
     async def test_returns_new_urls_for_accumulation(
