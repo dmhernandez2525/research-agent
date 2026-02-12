@@ -119,7 +119,7 @@ class TestCrawl4aiExtract:
 
     @pytest.mark.asyncio()
     async def test_handles_missing_title_attribute(self) -> None:
-        mock_cls, _ = _make_crawler_mock(success=True, markdown="Some content.")
+        _mock_cls, _ = _make_crawler_mock(success=True, markdown="Some content.")
         # Remove the title attribute to test getattr fallback
         mock_result = MagicMock(spec=["success", "markdown"])
         mock_result.success = True
@@ -155,7 +155,7 @@ class TestCrawl4aiExtract:
 
     @pytest.mark.asyncio()
     async def test_returns_none_on_none_markdown(self) -> None:
-        mock_cls, _ = _make_crawler_mock(success=True, markdown="")
+        _mock_cls, _ = _make_crawler_mock(success=True, markdown="")
         # Override markdown to be None
         mock_result = MagicMock()
         mock_result.success = True
