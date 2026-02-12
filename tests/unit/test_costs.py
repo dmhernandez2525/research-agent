@@ -9,6 +9,7 @@ from research_agent.costs import (
     BudgetExhaustedError,
     BudgetStatus,
     BudgetTracker,
+    DegradationManager,
     DegradationTier,
     LLMCallRecord,
 )
@@ -385,3 +386,254 @@ class TestBudgetExhaustedError:
     def test_message(self) -> None:
         err = BudgetExhaustedError("budget exceeded")
         assert str(err) == "budget exceeded"
+
+
+# ---------------------------------------------------------------------------
+# TestDegradationManagerInit
+# ---------------------------------------------------------------------------
+
+
+class TestDegradationManagerInit:
+    """DegradationManager initializes with a budget tracker."""
+
+    def test_initial_tier_is_full(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        assert mgr.tier == DegradationTier.FULL
+
+    def test_has_tracker(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        assert mgr.tracker is tracker
+
+
+# ---------------------------------------------------------------------------
+# TestDegradationTierFromBudget
+# ---------------------------------------------------------------------------
+
+
+class TestDegradationTierFromBudget:
+    """Tier is computed from budget percentage when not forced."""
+
+    def test_full_tier(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        mgr = DegradationManager(tracker)
+        assert mgr.tier == DegradationTier.FULL
+
+    def test_reduced_tier_at_80_percent(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.80))
+        mgr = DegradationManager(tracker)
+        assert mgr.tier == DegradationTier.REDUCED
+
+    def test_cached_tier_at_95_percent(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.95))
+        mgr = DegradationManager(tracker)
+        assert mgr.tier == DegradationTier.CACHED
+
+
+# ---------------------------------------------------------------------------
+# TestDegradationModelChains
+# ---------------------------------------------------------------------------
+
+
+class TestDegradationModelChains:
+    """Model chains differ by tier."""
+
+    def test_full_tier_uses_sonnet(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        assert "sonnet" in mgr.get_model()
+
+    def test_reduced_tier_uses_haiku(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.85))
+        mgr = DegradationManager(tracker)
+        assert "haiku" in mgr.get_model()
+
+    def test_fallback_chain_returns_list(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        chain = mgr.get_fallback_chain()
+        assert isinstance(chain, list)
+        assert len(chain) >= 1
+
+    def test_full_chain_has_two_models(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        assert len(mgr.get_fallback_chain()) == 2
+
+
+# ---------------------------------------------------------------------------
+# TestFeatureFlags
+# ---------------------------------------------------------------------------
+
+
+class TestFeatureFlags:
+    """Feature flags control which operations are allowed per tier."""
+
+    def test_full_tier_allows_search(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        assert mgr.should_skip_search() is False
+        assert mgr.should_skip_scraping() is False
+
+    def test_reduced_tier_allows_search(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.85))
+        mgr = DegradationManager(tracker)
+        assert mgr.should_skip_search() is False
+        assert mgr.should_skip_scraping() is False
+
+    def test_cached_tier_skips_search(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.96))
+        mgr = DegradationManager(tracker)
+        assert mgr.should_skip_search() is True
+        assert mgr.should_skip_scraping() is False
+
+    def test_partial_tier_skips_all(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.PARTIAL)
+        assert mgr.should_skip_search() is True
+        assert mgr.should_skip_scraping() is True
+
+
+# ---------------------------------------------------------------------------
+# TestMaxSearchResults
+# ---------------------------------------------------------------------------
+
+
+class TestMaxSearchResults:
+    """max_search_results varies by tier."""
+
+    def test_full_tier_returns_10(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        assert mgr.max_search_results() == 10
+
+    def test_reduced_tier_returns_5(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.85))
+        mgr = DegradationManager(tracker)
+        assert mgr.max_search_results() == 5
+
+    def test_cached_tier_returns_3(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.96))
+        mgr = DegradationManager(tracker)
+        assert mgr.max_search_results() == 3
+
+    def test_partial_tier_returns_0(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.PARTIAL)
+        assert mgr.max_search_results() == 0
+
+
+# ---------------------------------------------------------------------------
+# TestForceDegrade
+# ---------------------------------------------------------------------------
+
+
+class TestForceDegrade:
+    """force_degrade overrides the computed tier."""
+
+    def test_force_specific_tier(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.CACHED)
+        assert mgr.tier == DegradationTier.CACHED
+
+    def test_force_one_step_down(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        assert mgr.tier == DegradationTier.FULL
+        mgr.force_degrade()
+        assert mgr.tier == DegradationTier.REDUCED
+
+    def test_force_multiple_steps(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade()  # FULL -> REDUCED
+        mgr.force_degrade()  # REDUCED -> CACHED
+        assert mgr.tier == DegradationTier.CACHED
+
+    def test_force_at_lowest_stays(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.PARTIAL)
+        mgr.force_degrade()  # Already at PARTIAL, stays
+        assert mgr.tier == DegradationTier.PARTIAL
+
+
+# ---------------------------------------------------------------------------
+# TestTryRecover
+# ---------------------------------------------------------------------------
+
+
+class TestTryRecover:
+    """try_recover upgrades tier when budget pressure eases."""
+
+    def test_recovers_when_below_threshold(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=10.0)
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.REDUCED)
+        # Budget at 0%, well below 75% threshold
+        assert mgr.try_recover() is True
+        assert mgr.tier == DegradationTier.FULL
+
+    def test_no_recovery_above_threshold(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.80))
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.CACHED)
+        # Budget at 80%, above 75% threshold
+        assert mgr.try_recover() is False
+        assert mgr.tier == DegradationTier.CACHED
+
+    def test_no_recovery_when_not_forced(self) -> None:
+        tracker = BudgetTracker()
+        mgr = DegradationManager(tracker)
+        # No forced tier, recovery is automatic via budget
+        assert mgr.try_recover() is False
+
+    def test_recovers_one_step_at_a_time(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=10.0)
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.CACHED)
+        mgr.try_recover()  # CACHED -> REDUCED
+        assert mgr.tier == DegradationTier.REDUCED
+        mgr.try_recover()  # REDUCED -> FULL
+        assert mgr.tier == DegradationTier.FULL
+
+    def test_recover_from_full_clears_forced(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=10.0)
+        mgr = DegradationManager(tracker)
+        mgr.force_degrade(DegradationTier.REDUCED)
+        mgr.try_recover()
+        # After recovering to FULL, forced tier should be cleared
+        assert mgr._forced_tier is None
+
+
+# ---------------------------------------------------------------------------
+# TestTierTransitionLogging
+# ---------------------------------------------------------------------------
+
+
+class TestTierTransitionLogging:
+    """Tier changes are logged via structlog."""
+
+    def test_transition_detected(self) -> None:
+        tracker = BudgetTracker(max_cost_usd=1.0)
+        mgr = DegradationManager(tracker)
+        # Start at FULL
+        assert mgr.tier == DegradationTier.FULL
+        # Spend to reach REDUCED
+        tracker.record_call(LLMCallRecord(model="test", cost_usd=0.85))
+        # Accessing tier should detect the transition
+        assert mgr.tier == DegradationTier.REDUCED
+        # Internal last_tier should be updated
+        assert mgr._last_tier == DegradationTier.REDUCED
