@@ -255,6 +255,65 @@ class ContextManager:
         """
         return [{"role": t.role, "content": t.content} for t in self._turns]
 
+    def format_for_api(
+        self,
+        system_prompt: str,
+        tool_definitions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Assemble the full API payload with cache-stable ordering.
+
+        Orders content as: system prompt -> tool definitions -> conversation
+        history. System content and tool definitions are placed first for
+        cache prefix stability.
+
+        Args:
+            system_prompt: The system prompt text.
+            tool_definitions: Optional list of tool schemas.
+
+        Returns:
+            Dict with ``system``, ``tools``, and ``messages`` keys.
+        """
+        system_block = [
+            {
+                "type": "text",
+                "text": system_prompt,
+            }
+        ]
+
+        tools: list[dict[str, Any]] = list(tool_definitions) if tool_definitions else []
+
+        messages = self.get_context_window()
+
+        return {
+            "system": system_block,
+            "tools": tools,
+            "messages": messages,
+        }
+
+    def window_report(self) -> dict[str, Any]:
+        """Return a diagnostic report of the context window state.
+
+        Useful for debugging context usage and masking behavior.
+
+        Returns:
+            Dict with turn_count, total_tokens, max_tokens,
+            utilization_percent, active_stage, masked_count,
+            and unmasked_count.
+        """
+        masked = sum(1 for t in self._turns if t.masked)
+        return {
+            "turn_count": self.turn_count,
+            "total_tokens": self.total_tokens,
+            "max_tokens": self.max_tokens,
+            "utilization_percent": round(self.utilization_percent, 1),
+            "active_stage": self.active_stage.name,
+            "masked_count": masked,
+            "unmasked_count": self.turn_count - masked,
+            "window_size": self.window_size,
+        }
+
     def clear(self) -> None:
-        """Remove all turns."""
+        """Remove all turns and reset compaction state."""
         self._turns.clear()
+        self._compaction_pending = False
+        self._turns_since_compaction = 0
