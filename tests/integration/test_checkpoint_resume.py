@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from research_agent.checkpoints import (
-    CheckpointCorruptionError,
     CheckpointManager,
     generate_run_id,
 )
+from research_agent.exceptions import CheckpointCorruptionError
 
 if TYPE_CHECKING:
     from pathlib import Path

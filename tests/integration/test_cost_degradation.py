@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 
 from research_agent.costs import (
-    BudgetExhaustedError,
     BudgetTracker,
     DegradationManager,
     DegradationTier,
     LLMCallRecord,
 )
+from research_agent.exceptions import BudgetExhaustedError
 
 pytestmark = pytest.mark.integration
 

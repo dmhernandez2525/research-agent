@@ -18,6 +18,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from research_agent.exceptions import ModelRoutingError
+
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
@@ -318,5 +320,3 @@ class ModelRouter:
 # ---------------------------------------------------------------------------
 
 
-class ModelRoutingError(Exception):
-    """Raised when no model is available or all fallbacks fail."""

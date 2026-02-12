@@ -13,6 +13,8 @@ from typing import ClassVar
 import structlog
 from pydantic import BaseModel, Field
 
+from research_agent.exceptions import BudgetExhaustedError
+
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 
@@ -437,5 +439,3 @@ class DegradationManager:
 # ---------------------------------------------------------------------------
 
 
-class BudgetExhaustedError(Exception):
-    """Raised when the research run's cost budget is fully consumed."""
