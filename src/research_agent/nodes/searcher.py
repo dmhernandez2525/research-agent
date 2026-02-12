@@ -8,7 +8,9 @@ deduplicated results into the graph state.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import structlog
 from pydantic import BaseModel, Field
@@ -32,6 +34,63 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 _MAX_CONCURRENT_SEARCHES = 3
 _MIN_RELEVANCE_SCORE = 0.3
+
+# Tracking parameters to strip during URL normalization
+_TRACKING_PARAMS: re.Pattern[str] = re.compile(
+    r"^(utm_\w+|fbclid|gclid|gclsrc|dclid|msclkid|mc_[ce]id|"
+    r"ref|affiliate|campaign_id|ad_id|zanpid|_ga|_gid|_gl|"
+    r"yclid|_openstat|wbraid|gbraid)$",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# URL normalization
+# ---------------------------------------------------------------------------
+
+
+def _normalize_url(url: str) -> str:
+    """Normalize a URL for deduplication comparison.
+
+    Applies the following transformations:
+    - Lowercase the scheme and hostname
+    - Strip trailing slash from the path
+    - Remove URL fragment (#section)
+    - Remove tracking query parameters (utm_*, fbclid, gclid, etc.)
+    - Sort remaining query parameters for consistent comparison
+
+    Args:
+        url: The raw URL to normalize.
+
+    Returns:
+        Normalized URL string.
+    """
+    parsed = urlparse(url)
+
+    # Lowercase scheme and hostname
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+
+    # Strip trailing slash from path (but keep "/" for root)
+    path = parsed.path.rstrip("/") or "/"
+
+    # Remove fragment
+    fragment = ""
+
+    # Filter out tracking parameters, sort remaining
+    if parsed.query:
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        filtered = {k: v for k, v in params.items() if not _TRACKING_PARAMS.match(k)}
+        # Sort keys and use first value for each param for stable output
+        query = urlencode(
+            sorted(filtered.items()),
+            doseq=True,
+        )
+    else:
+        query = ""
+
+    return urlunparse((scheme, netloc, path, parsed.params, query, fragment))
+
 
 _EXPAND_SYSTEM_PROMPT = """\
 You are a search query expansion specialist. Given a research sub-question,
@@ -183,7 +242,10 @@ def _parse_results(
 
 
 def _deduplicate_results(results: list[SearchResult]) -> list[SearchResult]:
-    """Remove duplicate search results by URL.
+    """Remove duplicate search results by normalized URL.
+
+    Uses ``_normalize_url`` so that URLs differing only in tracking params,
+    trailing slashes, fragments, or casing are treated as duplicates.
 
     Args:
         results: Raw list of search results (may contain duplicates).
@@ -194,8 +256,9 @@ def _deduplicate_results(results: list[SearchResult]) -> list[SearchResult]:
     seen_urls: set[str] = set()
     unique: list[SearchResult] = []
     for result in results:
-        if result.url not in seen_urls:
-            seen_urls.add(result.url)
+        norm = _normalize_url(result.url)
+        if norm not in seen_urls:
+            seen_urls.add(norm)
             unique.append(result)
     return unique
 
@@ -298,18 +361,23 @@ async def search_node(state: ResearchState) -> dict[str, Any]:
     for results in batch_results:
         all_results.extend(results)
 
-    # Deduplicate within this batch
+    # Deduplicate within this batch (uses normalized URLs)
     unique = _deduplicate_results(all_results)
 
-    # Filter out already-seen URLs (cross-subtopic dedup)
-    seen_set = set(seen_urls)
-    new_results = [r for r in unique if r.url not in seen_set]
-    new_urls = [r.url for r in new_results]
+    # Filter out already-seen URLs (cross-subtopic dedup with normalization)
+    seen_set = {_normalize_url(u) for u in seen_urls}
+    new_results = [r for r in unique if _normalize_url(r.url) not in seen_set]
+    new_urls = [_normalize_url(r.url) for r in new_results]
 
+    # Dedup statistics
+    batch_dupes = len(all_results) - len(unique)
+    cross_dupes = len(unique) - len(new_results)
     logger.info(
         "search_complete",
         sub_question_id=sub_q_id,
         total_raw=len(all_results),
+        batch_deduped=batch_dupes,
+        cross_deduped=cross_dupes,
         unique=len(unique),
         new=len(new_results),
     )
