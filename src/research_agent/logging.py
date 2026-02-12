@@ -1,11 +1,14 @@
 """structlog configuration and provenance chain logging.
 
 Provides session ID generation, step-level logging context managers,
-and structured log configuration for console and JSON output.
+and structured log configuration for console and JSON output with
+optional file logging.
 """
 
 from __future__ import annotations
 
+import logging
+import sys
 import uuid
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -14,6 +17,7 @@ import structlog
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Session ID
@@ -34,23 +38,41 @@ def generate_session_id() -> str:
 # ---------------------------------------------------------------------------
 
 
+_VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
 def configure_logging(
     level: str = "INFO",
     fmt: str = "console",
-    log_file: str | None = None,
+    log_file: str | Path | None = None,
     session_id: str | None = None,
 ) -> None:
     """Configure structlog for the application.
 
+    Sets up structlog with shared processors and a format-specific
+    renderer. Configures the stdlib logging root to respect the given
+    level and optionally adds a file handler.
+
     Args:
         level: Log level name (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        fmt: Output format -- ``"console"`` for human-readable or
+        fmt: Output format: ``"console"`` for human-readable or
             ``"json"`` for machine-parseable.
         log_file: Optional file path for log output (in addition to stderr).
         session_id: Optional session ID to bind to all log entries.
+
+    Raises:
+        ValueError: If ``level`` is not a recognized log level.
     """
+    level_upper = level.upper()
+    if level_upper not in _VALID_LEVELS:
+        msg = f"Invalid log level: {level!r}. Must be one of {sorted(_VALID_LEVELS)}"
+        raise ValueError(msg)
+
+    numeric_level = getattr(logging, level_upper)
+
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        structlog.stdlib.filter_by_level,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
@@ -64,15 +86,43 @@ def configure_logging(
     else:
         renderer = structlog.dev.ConsoleRenderer()
 
+    # Configure stdlib logging for level filtering and file output
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+
+    # Clear existing handlers to avoid duplicates on re-configuration
+    root_logger.handlers.clear()
+
+    # Stderr handler
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(numeric_level)
+    root_logger.addHandler(stderr_handler)
+
+    # Optional file handler
+    if log_file:
+        file_handler = logging.FileHandler(str(log_file), encoding="utf-8")
+        file_handler.setLevel(numeric_level)
+        root_logger.addHandler(file_handler)
+
     structlog.configure(
         processors=[
             *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=False,
+    )
+
+    # Set up the formatter for stdlib handlers
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             renderer,
         ],
-        logger_factory=structlog.PrintLoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
     )
+    for handler in root_logger.handlers:
+        handler.setFormatter(formatter)
 
     if session_id:
         structlog.contextvars.bind_contextvars(session_id=session_id)
