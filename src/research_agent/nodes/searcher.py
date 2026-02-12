@@ -1,7 +1,8 @@
-"""Tavily search node.
+"""Tavily search node with ExpandSearch pattern.
 
-Generates 3 query variations per sub-question (ExpandSearch pattern) and
-executes searches, accumulating results into the graph state.
+Generates 3 query variations per sub-question using LLM-powered expansion,
+then executes searches for all variations concurrently, accumulating
+deduplicated results into the graph state.
 """
 
 from __future__ import annotations
@@ -32,6 +33,22 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 _MAX_CONCURRENT_SEARCHES = 3
 _MIN_RELEVANCE_SCORE = 0.3
 
+_EXPAND_SYSTEM_PROMPT = """\
+You are a search query expansion specialist. Given a research sub-question,
+generate exactly 3 diverse search query reformulations optimized for web search.
+
+Strategy for the 3 variations:
+1. **Direct query**: A focused, keyword-rich reformulation of the question.
+2. **Broader context**: A query that captures the wider topic or background.
+3. **Specific detail**: A query targeting specific facts, data, or examples.
+
+Guidelines:
+- Keep queries concise (under 15 words each).
+- Use different vocabulary across variations to maximize result diversity.
+- Roughly 63% syntax reformulations, 37% semantic expansions.
+- Do NOT include the original question verbatim as a variation.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Structured output for query expansion
@@ -47,6 +64,48 @@ class ExpandedQueries(BaseModel):
         min_length=3,
         max_length=3,
     )
+
+
+# ---------------------------------------------------------------------------
+# Query expansion (ExpandSearch pattern)
+# ---------------------------------------------------------------------------
+
+
+async def _expand_queries(question: str) -> ExpandedQueries:
+    """Use an LLM to expand a sub-question into 3 search query variations.
+
+    Uses the FAST tier model (Haiku) for cost efficiency. Falls back to
+    the original question wrapped in an ExpandedQueries if the LLM call fails.
+
+    Args:
+        question: The original sub-question to expand.
+
+    Returns:
+        An ExpandedQueries instance with 3 search query variations.
+
+    Raises:
+        Exception: Re-raises any LLM error so the caller can handle fallback.
+    """
+    from langchain_anthropic import ChatAnthropic
+
+    model = ChatAnthropic(
+        model="claude-haiku-3-5-20241022",
+        max_tokens=256,
+        temperature=0.7,
+    )
+    structured = model.with_structured_output(ExpandedQueries)
+    result = await structured.ainvoke(
+        [
+            {"role": "system", "content": _EXPAND_SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ]
+    )
+    logger.info(
+        "expand_queries_ok",
+        original=question,
+        variations=result.variations,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +280,23 @@ async def search_node(state: ResearchState) -> dict[str, Any]:
                 logger.warning("search_query_failed", query=q, error=str(exc))
                 return []
 
-    # For now, search with the original question directly.
-    # ExpandSearch (F2.2) will add query expansion later.
-    results = await _search_one(question)
-    all_results.extend(results)
+    # ExpandSearch: generate 3 query variations via LLM, fallback to original
+    try:
+        expanded = await _expand_queries(question)
+        queries = expanded.variations
+    except Exception as exc:
+        logger.warning(
+            "expand_queries_failed",
+            question=question,
+            error=str(exc),
+        )
+        queries = [question]
+
+    # Search all query variations concurrently
+    tasks = [_search_one(q) for q in queries]
+    batch_results = await asyncio.gather(*tasks)
+    for results in batch_results:
+        all_results.extend(results)
 
     # Deduplicate within this batch
     unique = _deduplicate_results(all_results)
