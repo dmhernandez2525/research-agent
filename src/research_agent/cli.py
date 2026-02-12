@@ -314,6 +314,14 @@ def run(
             help="Auto-approve plan after N seconds of inactivity (0=disabled).",
         ),
     ] = 0,
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            "-f",
+            help="Output format: 'md' (default) or 'pdf' (requires pymupdf).",
+        ),
+    ] = "md",
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Enable verbose logging."),
@@ -406,9 +414,27 @@ def run(
         if report:
             out_dir = output or Path(settings.report.output_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
-            report_path = out_dir / f"{run_id}.md"
-            report_path.write_text(report)
-            console.print(f"\n[green]Report saved:[/green] {report_path}")
+
+            if fmt == "pdf":
+                from research_agent.pdf_output import write_pdf_report
+
+                pdf_path = write_pdf_report(report, query, out_dir)
+                if pdf_path:
+                    console.print(f"\n[green]PDF report saved:[/green] {pdf_path}")
+                else:
+                    console.print(
+                        "[yellow]PDF generation unavailable. "
+                        "Install pymupdf: pip install research-agent[pdf][/yellow]"
+                    )
+                    report_path = out_dir / f"{run_id}.md"
+                    report_path.write_text(report)
+                    console.print(
+                        f"[green]Markdown report saved:[/green] {report_path}"
+                    )
+            else:
+                report_path = out_dir / f"{run_id}.md"
+                report_path.write_text(report)
+                console.print(f"\n[green]Report saved:[/green] {report_path}")
         else:
             console.print(
                 "\n[yellow]No report generated. "

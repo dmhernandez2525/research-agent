@@ -103,6 +103,8 @@ module = [
     "sentence_transformers.*",
     "crawl4ai",
     "crawl4ai.*",
+    "pymupdf",
+    "pymupdf.*",
 ]
 ignore_missing_imports = true
 
