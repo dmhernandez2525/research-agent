@@ -7,14 +7,62 @@ each group, extracting key findings and citing source URLs.
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from pydantic import BaseModel, Field
+
+from research_agent.state import Summary
 
 if TYPE_CHECKING:
-    from research_agent.state import ResearchState, ScrapedContent, Summary
+    from research_agent.state import ResearchState, ScrapedContent
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+
+
+# ---------------------------------------------------------------------------
+# Structured output schema
+# ---------------------------------------------------------------------------
+
+
+class SummarizerOutput(BaseModel):
+    """Structured output from the summarization LLM call."""
+
+    summary: str = Field(description="200-500 word summary paragraph.")
+    key_findings: list[str] = Field(
+        description="3-5 key findings as concise bullet points.",
+        min_length=1,
+        max_length=10,
+    )
+    disagreements: str = Field(
+        default="",
+        description="Notable disagreements or gaps between sources.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prompt loading
+# ---------------------------------------------------------------------------
+
+
+def _load_prompt() -> dict[str, str]:
+    """Load the summarizer prompt templates from YAML.
+
+    Returns:
+        Dictionary with 'system' and 'user' prompt templates.
+    """
+    import yaml
+
+    path = _PROMPTS_DIR / "summarizer.yaml"
+    with path.open() as f:
+        return yaml.safe_load(f)
 
 
 # ---------------------------------------------------------------------------
@@ -39,15 +87,34 @@ def _group_content_by_question(
     return dict(groups)
 
 
-def _summarize_group(
+def _build_content_block(items: list[ScrapedContent]) -> str:
+    """Concatenate scraped content items into a single text block.
+
+    Each item is separated by a horizontal rule and prefixed with
+    its source title and URL for citation tracking.
+
+    Args:
+        items: Scraped content items to concatenate.
+
+    Returns:
+        Formatted content string for the LLM prompt.
+    """
+    parts: list[str] = []
+    for item in items:
+        header = f"Source: {item.title} ({item.url})"
+        parts.append(f"{header}\n\n{item.content}")
+    return "\n\n---\n\n".join(parts)
+
+
+async def _summarize_group(
     sub_question_id: int,
     sub_question_text: str,
     content_items: list[ScrapedContent],
 ) -> Summary:
     """Produce a compressed summary for a group of content items.
 
-    Uses LLM to summarize the combined content, extracting key findings
-    and preserving source attribution.
+    Uses the SMART tier LLM (Sonnet) with structured output to generate
+    a summary with key findings, preserving source attribution.
 
     Args:
         sub_question_id: The sub-question ID.
@@ -55,12 +122,50 @@ def _summarize_group(
         content_items: Scraped content for this sub-question.
 
     Returns:
-        A ``Summary`` model with the compressed text.
-
-    Raises:
-        NotImplementedError: Stub -- full implementation pending.
+        A ``Summary`` model with the compressed text and findings.
     """
-    raise NotImplementedError("_summarize_group is not yet implemented")
+    from langchain_anthropic import ChatAnthropic
+
+    prompt_templates = _load_prompt()
+
+    model = ChatAnthropic(
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=4096,
+        temperature=0.1,
+    )
+    structured = model.with_structured_output(SummarizerOutput)
+
+    content_block = _build_content_block(content_items)
+    user_prompt = prompt_templates["user"].format(
+        sub_question=sub_question_text,
+        num_sources=len(content_items),
+        content=content_block,
+    )
+
+    result = await structured.ainvoke(
+        [
+            {"role": "system", "content": prompt_templates["system"]},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+
+    source_urls = list({item.url for item in content_items})
+
+    logger.info(
+        "summarize_group_ok",
+        sub_question_id=sub_question_id,
+        num_sources=len(content_items),
+        num_findings=len(result.key_findings),
+        summary_words=len(result.summary.split()),
+    )
+
+    return Summary(
+        sub_question_id=sub_question_id,
+        sub_question=sub_question_text,
+        summary=result.summary,
+        source_urls=source_urls,
+        key_findings=result.key_findings,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -68,29 +173,85 @@ def _summarize_group(
 # ---------------------------------------------------------------------------
 
 
-def summarize_node(state: ResearchState) -> dict[str, Any]:
-    """Summarize scraped content grouped by sub-question.
+async def summarize_node(state: ResearchState) -> dict[str, Any]:
+    """Summarize scraped content for the current subtopic.
 
-    Produces one ``Summary`` per sub-question, containing compressed
-    findings and source citations.
+    Filters scraped content by the current sub-question ID, generates
+    a structured summary via LLM, and increments the subtopic index
+    for the next iteration.
 
     Args:
         state: Current research state with ``scraped_content`` and
             ``sub_questions`` populated.
 
     Returns:
-        Partial state update with ``summaries``, ``step``, and
-        ``step_index``.
-
-    Raises:
-        NotImplementedError: Stub -- full implementation pending.
+        Partial state update with ``summaries``, ``current_subtopic_index``,
+        ``step``, and ``step_index``.
     """
     scraped_content = state.get("scraped_content", [])
     sub_questions = state.get("sub_questions", [])
+    current_idx = state.get("current_subtopic_index", 0)
+
     logger.info(
         "summarize_start",
         num_content=len(scraped_content),
         num_sub_questions=len(sub_questions),
+        current_subtopic_index=current_idx,
     )
 
-    raise NotImplementedError("summarize_node is not yet implemented")
+    if not sub_questions or current_idx >= len(sub_questions):
+        logger.warning(
+            "summarize_skip", reason="no sub-questions or index out of range"
+        )
+        return {
+            "summaries": [],
+            "step": "summarize",
+            "step_index": 3,
+            "current_subtopic_index": current_idx + 1,
+        }
+
+    sub_q = sub_questions[current_idx]
+    sub_q_id = sub_q.get("id", current_idx + 1) if isinstance(sub_q, dict) else sub_q.id
+    question = sub_q.get("question", "") if isinstance(sub_q, dict) else sub_q.question
+
+    # Filter content for current sub-question
+    grouped = _group_content_by_question(scraped_content)
+    current_content = grouped.get(sub_q_id, [])
+
+    if not current_content:
+        logger.warning(
+            "summarize_no_content",
+            sub_question_id=sub_q_id,
+            question=question,
+        )
+        return {
+            "summaries": [],
+            "step": "summarize",
+            "step_index": 3,
+            "current_subtopic_index": current_idx + 1,
+        }
+
+    try:
+        summary = await _summarize_group(sub_q_id, question, current_content)
+        summaries = [summary]
+    except Exception as exc:
+        logger.error(
+            "summarize_failed",
+            sub_question_id=sub_q_id,
+            error=str(exc),
+        )
+        summaries = []
+
+    logger.info(
+        "summarize_complete",
+        sub_question_id=sub_q_id,
+        num_sources=len(current_content),
+        produced_summary=len(summaries) > 0,
+    )
+
+    return {
+        "summaries": summaries,
+        "step": "summarize",
+        "step_index": 3,
+        "current_subtopic_index": current_idx + 1,
+    }
