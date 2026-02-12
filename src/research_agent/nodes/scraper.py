@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import structlog
 
-from research_agent.state import ScrapedContent
+from research_agent.state import ScrapedPage
 
 if TYPE_CHECKING:
     from research_agent.state import ResearchState, SearchResult
@@ -124,7 +124,7 @@ async def _fetch_and_extract(
     result: SearchResult,
     timeout: int = _DEFAULT_TIMEOUT,
     max_content_length: int = _DEFAULT_MAX_CONTENT_LENGTH,
-) -> ScrapedContent | None:
+) -> ScrapedPage | None:
     """Fetch a URL and extract content using Trafilatura.
 
     Fetches HTML via httpx, extracts main content with Trafilatura,
@@ -137,7 +137,7 @@ async def _fetch_and_extract(
         max_content_length: Maximum characters to retain.
 
     Returns:
-        A ``ScrapedContent`` model, or ``None`` if extraction failed.
+        A ``ScrapedPage`` model, or ``None`` if extraction failed.
     """
     import trafilatura
 
@@ -189,9 +189,9 @@ async def _fetch_and_extract(
         quality_score=quality,
     )
 
-    return ScrapedContent(
+    return ScrapedPage(
         url=url,
-        sub_question_id=result.sub_question_id,
+        subtopic_id=result.subtopic_id,
         title=result.title,
         content=content,
         word_count=word_count,
@@ -204,7 +204,7 @@ async def _scrape_batch(
     max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
     timeout: int = _DEFAULT_TIMEOUT,
     max_content_length: int = _DEFAULT_MAX_CONTENT_LENGTH,
-) -> list[ScrapedContent]:
+) -> list[ScrapedPage]:
     """Scrape a batch of search results concurrently.
 
     Uses ``asyncio.Semaphore`` to limit concurrency. Failed scrapes are
@@ -221,7 +221,7 @@ async def _scrape_batch(
     """
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def _limited_fetch(r: SearchResult) -> ScrapedContent | None:
+    async def _limited_fetch(r: SearchResult) -> ScrapedPage | None:
         async with semaphore:
             return await _fetch_and_extract(
                 r,
@@ -249,19 +249,19 @@ async def scrape_node(state: ResearchState) -> dict[str, Any]:
         state: Current research state with ``search_results`` populated.
 
     Returns:
-        Partial state update with ``scraped_content``, ``step``, and
+        Partial state update with ``scraped_pages``, ``step``, and
         ``step_index``.
     """
     search_results = state.get("search_results", [])
     logger.info("scrape_start", num_urls=len(search_results))
 
     if not search_results:
-        return {"scraped_content": [], "step": "scrape", "step_index": 2}
+        return {"scraped_pages": [], "step": "scrape", "step_index": 2}
 
     scraped = await _scrape_batch(search_results)
 
     # Filter by quality threshold
-    accepted: list[ScrapedContent] = []
+    accepted: list[ScrapedPage] = []
     for item in scraped:
         if item.quality_score < _MIN_QUALITY_SCORE:
             logger.info(
@@ -289,7 +289,7 @@ async def scrape_node(state: ResearchState) -> dict[str, Any]:
     )
 
     return {
-        "scraped_content": accepted,
+        "scraped_pages": accepted,
         "step": "scrape",
         "step_index": 2,
     }

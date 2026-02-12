@@ -118,14 +118,14 @@ def _create_progress() -> Progress:
     )
 
 
-def _display_plan(sub_questions: list[dict[str, Any]]) -> None:
+def _display_plan(subtopics: list[dict[str, Any]]) -> None:
     """Display the research plan as a Rich table."""
     table = Table(title="Research Plan", show_lines=True)
     table.add_column("#", style="cyan", justify="right", width=4)
     table.add_column("Sub-Question", style="white")
     table.add_column("Rationale", style="dim")
 
-    for sq in sub_questions:
+    for sq in subtopics:
         table.add_row(
             str(sq.get("id", "")),
             sq.get("question", ""),
@@ -167,36 +167,36 @@ def _approve_plan(timeout_seconds: int = 0) -> str:
 
 
 def _handle_plan_review(
-    sub_questions: list[dict[str, Any]],
+    subtopics: list[dict[str, Any]],
     no_approve: bool = False,
     approve_timeout: int = 0,
 ) -> list[dict[str, Any]] | None:
     """Run the full plan review workflow.
 
     Displays the plan table, prompts for approval, and handles the edit
-    flow when requested. Returns the (possibly edited) sub-questions,
+    flow when requested. Returns the (possibly edited) subtopics,
     or None if the user cancelled.
 
     Args:
-        sub_questions: List of sub-question dicts from the planner.
+        subtopics: List of subtopic dicts from the planner.
         no_approve: If True, skip approval and proceed immediately.
         approve_timeout: Seconds before auto-approval (0 = no timeout).
 
     Returns:
-        Final list of sub-question dicts, or None if cancelled.
+        Final list of subtopic dicts, or None if cancelled.
     """
-    _display_plan(sub_questions)
+    _display_plan(subtopics)
 
     if no_approve:
         console.print("[dim]Plan auto-approved (--no-approve).[/dim]")
-        return sub_questions
+        return subtopics
 
     while True:
         decision = _approve_plan(timeout_seconds=approve_timeout)
 
         if decision == "approve":
             console.print("[green]Plan approved.[/green]")
-            return sub_questions
+            return subtopics
 
         if decision == "cancel":
             console.print("[yellow]Plan cancelled by user.[/yellow]")
@@ -206,30 +206,30 @@ def _handle_plan_review(
         console.print("[cyan]Opening plan editor...[/cyan]")
 
         # Try $EDITOR first, fall back to inline editing
-        edited = edit_plan_in_editor(sub_questions)
+        edited = edit_plan_in_editor(subtopics)
         if edited is None:
             console.print(
                 "[yellow]Editor returned no changes. Trying inline editing...[/yellow]"
             )
-            edited = edit_plan_inline(sub_questions)
+            edited = edit_plan_inline(subtopics)
 
         if edited is None:
             console.print("[yellow]Edit cancelled. Returning to approval.[/yellow]")
             continue
 
-        # Update sub_questions with the edited version
-        sub_questions = [
+        # Update subtopics with the edited version
+        subtopics = [
             {
                 "id": sq.id,
                 "question": sq.question,
                 "rationale": sq.rationale,
             }
-            for sq in edited.sub_questions
+            for sq in edited.subtopics
         ]
         console.print(
-            f"[green]Plan updated ({len(sub_questions)} sub-questions).[/green]"
+            f"[green]Plan updated ({len(subtopics)} sub-questions).[/green]"
         )
-        _display_plan(sub_questions)
+        _display_plan(subtopics)
 
 
 def _display_error_with_resume(
@@ -359,10 +359,10 @@ def run(
             "query": query,
             "step": "plan",
             "step_index": 0,
-            "sub_questions": [],
+            "subtopics": [],
             "search_results": [],
-            "scraped_content": [],
-            "summaries": [],
+            "scraped_pages": [],
+            "subtopic_summaries": [],
             "final_report": "",
             "sources": [],
             "error_log": [],

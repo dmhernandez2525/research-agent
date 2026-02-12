@@ -36,9 +36,9 @@ class EditableSubQuestion(BaseModel):
 class EditedPlan(BaseModel):
     """Validated result of an edited plan."""
 
-    sub_questions: list[EditableSubQuestion] = Field(min_length=1, max_length=20)
+    subtopics: list[EditableSubQuestion] = Field(min_length=1, max_length=20)
 
-    @field_validator("sub_questions")
+    @field_validator("subtopics")
     @classmethod
     def renumber_ids(
         cls,
@@ -64,7 +64,7 @@ _EDIT_HEADER = """\
 # Save and close the editor when done.
 # To cancel, delete all entries or leave the file empty.
 
-sub_questions:
+subtopics:
 """
 
 
@@ -87,17 +87,17 @@ def _yaml_quote(value: str) -> str:
     return value
 
 
-def plan_to_yaml(sub_questions: list[dict[str, Any]]) -> str:
-    """Serialize sub-questions to an editable YAML string.
+def plan_to_yaml(subtopics: list[dict[str, Any]]) -> str:
+    """Serialize subtopics to an editable YAML string.
 
     Args:
-        sub_questions: List of sub-question dicts with id, question, rationale.
+        subtopics: List of subtopic dicts with id, question, rationale.
 
     Returns:
-        YAML string with header comments and sub-question entries.
+        YAML string with header comments and subtopic entries.
     """
     lines = [_EDIT_HEADER]
-    for sq in sub_questions:
+    for sq in subtopics:
         sq_id = sq.get("id", 0)
         question = sq.get("question", "")
         rationale = sq.get("rationale", "")
@@ -131,7 +131,7 @@ def yaml_to_plan(content: str) -> EditedPlan | None:
     if not isinstance(data, dict):
         return None
 
-    raw_sqs = data.get("sub_questions")
+    raw_sqs = data.get("subtopics")
     if not raw_sqs or not isinstance(raw_sqs, list):
         return None
 
@@ -143,7 +143,7 @@ def yaml_to_plan(content: str) -> EditedPlan | None:
                     sq[key] = ""
 
     try:
-        return EditedPlan(sub_questions=raw_sqs)
+        return EditedPlan(subtopics=raw_sqs)
     except Exception:
         logger.warning("plan_edit_validation_error")
         return None
@@ -163,20 +163,20 @@ def _get_editor() -> str:
     return os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
 
 
-def edit_plan_in_editor(sub_questions: list[dict[str, Any]]) -> EditedPlan | None:
-    """Open sub-questions in $EDITOR for interactive editing.
+def edit_plan_in_editor(subtopics: list[dict[str, Any]]) -> EditedPlan | None:
+    """Open subtopics in $EDITOR for interactive editing.
 
     Creates a temporary YAML file, opens it in the user's editor,
     and parses the result on save.
 
     Args:
-        sub_questions: Current sub-question list.
+        subtopics: Current subtopic list.
 
     Returns:
-        Validated EditedPlan with edited sub-questions, or None if
+        Validated EditedPlan with edited subtopics, or None if
         the user cancelled (empty file or parse failure).
     """
-    yaml_content = plan_to_yaml(sub_questions)
+    yaml_content = plan_to_yaml(subtopics)
     editor = _get_editor()
 
     with tempfile.NamedTemporaryFile(
@@ -208,14 +208,14 @@ def edit_plan_in_editor(sub_questions: list[dict[str, Any]]) -> EditedPlan | Non
             os.unlink(tmp_path)
 
 
-def edit_plan_inline(sub_questions: list[dict[str, Any]]) -> EditedPlan | None:
+def edit_plan_inline(subtopics: list[dict[str, Any]]) -> EditedPlan | None:
     """Simple inline plan editing via numbered removal.
 
     Prompts the user to enter sub-question numbers to remove,
     then returns the filtered plan.
 
     Args:
-        sub_questions: Current sub-question list.
+        subtopics: Current subtopic list.
 
     Returns:
         Validated EditedPlan, or None on cancellation.
@@ -237,13 +237,13 @@ def edit_plan_inline(sub_questions: list[dict[str, Any]]) -> EditedPlan | None:
     except ValueError:
         return None
 
-    filtered = [sq for sq in sub_questions if sq.get("id") not in remove_ids]
+    filtered = [sq for sq in subtopics if sq.get("id") not in remove_ids]
     if not filtered:
         return None
 
     try:
         return EditedPlan(
-            sub_questions=[
+            subtopics=[
                 EditableSubQuestion(
                     id=sq.get("id", 0),
                     question=sq.get("question", ""),

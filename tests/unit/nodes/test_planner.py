@@ -8,10 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from research_agent.nodes.planner import PlannerOutput, plan_node
-from research_agent.state import SubQuestion
+from research_agent.state import Subtopic
 
-# PlannerOutput uses SubQuestion via TYPE_CHECKING, so we must rebuild
-# the model after SubQuestion is available at runtime.
+# PlannerOutput uses Subtopic via TYPE_CHECKING, so we must rebuild
+# the model after Subtopic is available at runtime.
 PlannerOutput.model_rebuild()
 
 # ---------------------------------------------------------------------------
@@ -20,83 +20,83 @@ PlannerOutput.model_rebuild()
 
 
 class TestPlannerOutput:
-    """PlannerOutput validates sub_questions list constraints."""
+    """PlannerOutput validates subtopics list constraints."""
 
     def test_valid_construction(self) -> None:
-        sq = SubQuestion(id=1, question="What is RAG?")
-        output = PlannerOutput(sub_questions=[sq])
-        assert len(output.sub_questions) == 1
-        assert output.sub_questions[0].question == "What is RAG?"
+        sq = Subtopic(id=1, question="What is RAG?")
+        output = PlannerOutput(subtopics=[sq])
+        assert len(output.subtopics) == 1
+        assert output.subtopics[0].question == "What is RAG?"
 
     def test_default_reasoning_is_empty(self) -> None:
-        sq = SubQuestion(id=1, question="What is RAG?")
-        output = PlannerOutput(sub_questions=[sq])
+        sq = Subtopic(id=1, question="What is RAG?")
+        output = PlannerOutput(subtopics=[sq])
         assert output.reasoning == ""
 
     def test_custom_reasoning(self) -> None:
-        sq = SubQuestion(id=1, question="What is RAG?")
+        sq = Subtopic(id=1, question="What is RAG?")
         output = PlannerOutput(
-            sub_questions=[sq],
+            subtopics=[sq],
             reasoning="Breaking down the query into core components.",
         )
         assert "core components" in output.reasoning
 
-    def test_multiple_sub_questions(self) -> None:
+    def test_multiple_subtopics(self) -> None:
         sqs = [
-            SubQuestion(id=1, question="What is RAG?"),
-            SubQuestion(id=2, question="How does retrieval work?"),
-            SubQuestion(id=3, question="What are RAG limitations?"),
+            Subtopic(id=1, question="What is RAG?"),
+            Subtopic(id=2, question="How does retrieval work?"),
+            Subtopic(id=3, question="What are RAG limitations?"),
         ]
-        output = PlannerOutput(sub_questions=sqs)
-        assert len(output.sub_questions) == 3
+        output = PlannerOutput(subtopics=sqs)
+        assert len(output.subtopics) == 3
 
-    def test_empty_sub_questions_raises(self) -> None:
+    def test_empty_subtopics_raises(self) -> None:
         with pytest.raises(ValidationError):
-            PlannerOutput(sub_questions=[])
+            PlannerOutput(subtopics=[])
 
-    def test_max_sub_questions_accepted(self) -> None:
-        sqs = [SubQuestion(id=i, question=f"Question {i}") for i in range(1, 11)]
-        output = PlannerOutput(sub_questions=sqs)
-        assert len(output.sub_questions) == 10
+    def test_max_subtopics_accepted(self) -> None:
+        sqs = [Subtopic(id=i, question=f"Question {i}") for i in range(1, 11)]
+        output = PlannerOutput(subtopics=sqs)
+        assert len(output.subtopics) == 10
 
-    def test_exceeds_max_sub_questions_raises(self) -> None:
-        sqs = [SubQuestion(id=i, question=f"Question {i}") for i in range(1, 12)]
+    def test_exceeds_max_subtopics_raises(self) -> None:
+        sqs = [Subtopic(id=i, question=f"Question {i}") for i in range(1, 12)]
         with pytest.raises(ValidationError):
-            PlannerOutput(sub_questions=sqs)
+            PlannerOutput(subtopics=sqs)
 
-    def test_missing_sub_questions_raises(self) -> None:
+    def test_missing_subtopics_raises(self) -> None:
         with pytest.raises(ValidationError):
             PlannerOutput()  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
-# SubQuestion model (used by PlannerOutput)
+# Subtopic model (used by PlannerOutput)
 # ---------------------------------------------------------------------------
 
 
-class TestSubQuestionInPlanner:
-    """SubQuestion model validates fields and provides defaults."""
+class TestSubtopicInPlanner:
+    """Subtopic model validates fields and provides defaults."""
 
-    def test_valid_sub_question(self) -> None:
-        sq = SubQuestion(id=1, question="What is RAG?")
+    def test_valid_subtopic(self) -> None:
+        sq = Subtopic(id=1, question="What is RAG?")
         assert sq.id == 1
         assert sq.question == "What is RAG?"
 
     def test_default_rationale_empty(self) -> None:
-        sq = SubQuestion(id=1, question="Q?")
+        sq = Subtopic(id=1, question="Q?")
         assert sq.rationale == ""
 
     def test_custom_rationale(self) -> None:
-        sq = SubQuestion(id=1, question="Q?", rationale="Covers the fundamentals")
+        sq = Subtopic(id=1, question="Q?", rationale="Covers the fundamentals")
         assert sq.rationale == "Covers the fundamentals"
 
     def test_missing_id_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SubQuestion(question="Q?")  # type: ignore[call-arg]
+            Subtopic(question="Q?")  # type: ignore[call-arg]
 
     def test_missing_question_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SubQuestion(id=1)  # type: ignore[call-arg]
+            Subtopic(id=1)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------

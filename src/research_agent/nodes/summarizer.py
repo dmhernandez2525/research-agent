@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import BaseModel, Field
 
-from research_agent.state import Summary
+from research_agent.state import SubtopicSummary
 
 if TYPE_CHECKING:
-    from research_agent.state import ResearchState, ScrapedContent
+    from research_agent.state import ResearchState, ScrapedPage
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -72,30 +72,30 @@ def _load_prompt() -> dict[str, str]:
 
 
 def _group_content_by_question(
-    content: list[ScrapedContent],
-) -> dict[int, list[ScrapedContent]]:
+    content: list[ScrapedPage],
+) -> dict[int, list[ScrapedPage]]:
     """Group scraped content items by their originating sub-question ID.
 
     Args:
         content: All scraped content items.
 
     Returns:
-        Mapping of sub_question_id to list of content items.
+        Mapping of subtopic_id to list of content items.
     """
-    groups: dict[int, list[ScrapedContent]] = defaultdict(list)
+    groups: dict[int, list[ScrapedPage]] = defaultdict(list)
     for item in content:
-        groups[item.sub_question_id].append(item)
+        groups[item.subtopic_id].append(item)
     return dict(groups)
 
 
-def _build_content_block(items: list[ScrapedContent]) -> str:
+def _build_content_block(items: list[ScrapedPage]) -> str:
     """Concatenate scraped content items into a single text block.
 
     Each item is separated by a horizontal rule and prefixed with
     its source title and URL for citation tracking.
 
     Args:
-        items: Scraped content items to concatenate.
+        items: Scraped page items to concatenate.
 
     Returns:
         Formatted content string for the LLM prompt.
@@ -116,22 +116,22 @@ _SUMMARIZER_JSON_INSTRUCTION = (
 
 
 async def _summarize_group(
-    sub_question_id: int,
+    subtopic_id: int,
     sub_question_text: str,
-    content_items: list[ScrapedContent],
-) -> Summary:
+    content_items: list[ScrapedPage],
+) -> SubtopicSummary:
     """Produce a compressed summary for a group of content items.
 
     Uses the SMART tier LLM (Sonnet) with structured output to generate
     a summary with key findings, preserving source attribution.
 
     Args:
-        sub_question_id: The sub-question ID.
+        subtopic_id: The sub-question ID.
         sub_question_text: The sub-question text for context.
         content_items: Scraped content for this sub-question.
 
     Returns:
-        A ``Summary`` model with the compressed text and findings.
+        A ``SubtopicSummary`` model with the compressed text and findings.
     """
     import litellm
 
@@ -166,14 +166,14 @@ async def _summarize_group(
 
     logger.info(
         "summarize_group_ok",
-        sub_question_id=sub_question_id,
+        subtopic_id=subtopic_id,
         num_sources=len(content_items),
         num_findings=len(result.key_findings),
         summary_words=len(result.summary.split()),
     )
 
-    return Summary(
-        sub_question_id=sub_question_id,
+    return SubtopicSummary(
+        subtopic_id=subtopic_id,
         sub_question=sub_question_text,
         summary=result.summary,
         source_urls=source_urls,
@@ -194,51 +194,51 @@ async def summarize_node(state: ResearchState) -> dict[str, Any]:
     for the next iteration.
 
     Args:
-        state: Current research state with ``scraped_content`` and
-            ``sub_questions`` populated.
+        state: Current research state with ``scraped_pages`` and
+            ``subtopics`` populated.
 
     Returns:
-        Partial state update with ``summaries``, ``current_subtopic_index``,
+        Partial state update with ``subtopic_summaries``, ``current_subtopic_index``,
         ``step``, and ``step_index``.
     """
-    scraped_content = state.get("scraped_content", [])
-    sub_questions = state.get("sub_questions", [])
+    scraped_pages = state.get("scraped_pages", [])
+    subtopics = state.get("subtopics", [])
     current_idx = state.get("current_subtopic_index", 0)
 
     logger.info(
         "summarize_start",
-        num_content=len(scraped_content),
-        num_sub_questions=len(sub_questions),
+        num_content=len(scraped_pages),
+        num_subtopics=len(subtopics),
         current_subtopic_index=current_idx,
     )
 
-    if not sub_questions or current_idx >= len(sub_questions):
+    if not subtopics or current_idx >= len(subtopics):
         logger.warning(
             "summarize_skip", reason="no sub-questions or index out of range"
         )
         return {
-            "summaries": [],
+            "subtopic_summaries": [],
             "step": "summarize",
             "step_index": 3,
             "current_subtopic_index": current_idx + 1,
         }
 
-    sub_q = sub_questions[current_idx]
+    sub_q = subtopics[current_idx]
     sub_q_id = sub_q.get("id", current_idx + 1) if isinstance(sub_q, dict) else sub_q.id
     question = sub_q.get("question", "") if isinstance(sub_q, dict) else sub_q.question
 
     # Filter content for current sub-question
-    grouped = _group_content_by_question(scraped_content)
+    grouped = _group_content_by_question(scraped_pages)
     current_content = grouped.get(sub_q_id, [])
 
     if not current_content:
         logger.warning(
             "summarize_no_content",
-            sub_question_id=sub_q_id,
+            subtopic_id=sub_q_id,
             question=question,
         )
         return {
-            "summaries": [],
+            "subtopic_summaries": [],
             "step": "summarize",
             "step_index": 3,
             "current_subtopic_index": current_idx + 1,
@@ -250,20 +250,20 @@ async def summarize_node(state: ResearchState) -> dict[str, Any]:
     except Exception as exc:
         logger.error(
             "summarize_failed",
-            sub_question_id=sub_q_id,
+            subtopic_id=sub_q_id,
             error=str(exc),
         )
         summaries = []
 
     logger.info(
         "summarize_complete",
-        sub_question_id=sub_q_id,
+        subtopic_id=sub_q_id,
         num_sources=len(current_content),
         produced_summary=len(summaries) > 0,
     )
 
     return {
-        "summaries": summaries,
+        "subtopic_summaries": summaries,
         "step": "summarize",
         "step_index": 3,
         "current_subtopic_index": current_idx + 1,

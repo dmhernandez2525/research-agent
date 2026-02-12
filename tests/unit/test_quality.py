@@ -45,8 +45,8 @@ def minimal_report() -> str:
 
 
 @pytest.fixture()
-def sub_questions() -> list[dict]:
-    """Sample sub-questions for coverage testing."""
+def subtopics() -> list[dict]:
+    """Sample subtopics for coverage testing."""
     return [
         {"id": 1, "question": "How does RAG improve accuracy?"},
         {"id": 2, "question": "What does fine-tuning require for data?"},
@@ -134,26 +134,26 @@ class TestCountCitations:
 class TestCheckSubtopicCoverage:
     """_check_subtopic_coverage checks subtopic mention coverage."""
 
-    def test_full_coverage(self, good_report: str, sub_questions: list[dict]) -> None:
-        coverage = _check_subtopic_coverage(good_report, sub_questions)
+    def test_full_coverage(self, good_report: str, subtopics: list[dict]) -> None:
+        coverage = _check_subtopic_coverage(good_report, subtopics)
         assert coverage >= 0.8
 
-    def test_partial_coverage(self, sub_questions: list[dict]) -> None:
+    def test_partial_coverage(self, subtopics: list[dict]) -> None:
         report = "RAG improves accuracy. Nothing about fine-tuning or databases."
-        coverage = _check_subtopic_coverage(report, sub_questions)
+        coverage = _check_subtopic_coverage(report, subtopics)
         assert 0.0 < coverage < 1.0
 
-    def test_no_coverage(self, sub_questions: list[dict]) -> None:
+    def test_no_coverage(self, subtopics: list[dict]) -> None:
         report = "This report is about cooking recipes."
-        coverage = _check_subtopic_coverage(report, sub_questions)
+        coverage = _check_subtopic_coverage(report, subtopics)
         assert coverage < 0.5
 
-    def test_empty_sub_questions(self) -> None:
+    def test_empty_subtopics(self) -> None:
         coverage = _check_subtopic_coverage("Any report text.", [])
         assert coverage == 1.0
 
-    def test_empty_report(self, sub_questions: list[dict]) -> None:
-        coverage = _check_subtopic_coverage("", sub_questions)
+    def test_empty_report(self, subtopics: list[dict]) -> None:
+        coverage = _check_subtopic_coverage("", subtopics)
         assert coverage < 1.0
 
 
@@ -195,9 +195,9 @@ class TestCheckReportQuality:
     """check_report_quality runs all checks and returns composite result."""
 
     def test_good_report_passes(
-        self, good_report: str, sub_questions: list[dict]
+        self, good_report: str, subtopics: list[dict]
     ) -> None:
-        result = check_report_quality(good_report, sub_questions)
+        result = check_report_quality(good_report, subtopics)
         assert result.passed is True
         assert result.has_executive_summary is True
         assert result.has_findings is True
@@ -240,7 +240,7 @@ class TestCheckReportQuality:
         result = check_report_quality(report, sqs)
         assert result.subtopic_coverage_ok is False
 
-    def test_no_sub_questions_defaults_full_coverage(self) -> None:
+    def test_no_subtopics_defaults_full_coverage(self) -> None:
         report = (
             "## Executive Summary\n\nSummary [Source 1].\n\n"
             "## Findings\n\nDetails.\n\n"
