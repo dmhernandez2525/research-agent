@@ -120,6 +120,12 @@ class LLMCallable(Protocol):
     async def __call__(self, prompt: str) -> str: ...
 
 
+class RevisionCallable(Protocol):
+    """Protocol for an async callable that revises a report given feedback."""
+
+    async def __call__(self, report: str, feedback: str) -> str: ...
+
+
 class EvaluationParseError(Exception):
     """Raised when the LLM evaluation response cannot be parsed."""
 
@@ -397,3 +403,215 @@ class ReportEvaluator:
             for rec in result.recommendations:
                 lines.append(f"- {rec}")
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Revision models
+# ---------------------------------------------------------------------------
+
+
+class RevisionRecord(BaseModel):
+    """Record of a single revision cycle."""
+
+    cycle: int = Field(ge=0, description="Revision cycle number (0 = initial).")
+    report: str = Field(description="Report text for this cycle.")
+    evaluation: EvaluationResult = Field(description="Evaluation result for this cycle.")
+
+
+class RevisionResult(BaseModel):
+    """Full result of the auto-revision process."""
+
+    best_report: str = Field(description="Report text with the highest overall score.")
+    best_evaluation: EvaluationResult = Field(
+        description="Evaluation of the best report."
+    )
+    total_cycles: int = Field(ge=0, description="Number of revision cycles performed.")
+    passed: bool = Field(description="Whether the best report met the quality threshold.")
+    history: list[RevisionRecord] = Field(
+        default_factory=list, description="Full revision history."
+    )
+    stop_reason: str = Field(
+        default="", description="Why the revision loop stopped."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Revision Manager
+# ---------------------------------------------------------------------------
+
+
+_DIMINISHING_RETURNS_THRESHOLD = 0.1
+"""Minimum score improvement between cycles to continue revising."""
+
+
+class RevisionManager:
+    """Orchestrates auto-revision cycles for below-threshold reports.
+
+    Evaluates a report, and if it falls below ``QUALITY_THRESHOLD``,
+    feeds evaluation feedback into a revision callable for up to
+    ``MAX_REVISION_CYCLES`` iterations. Stops early on diminishing
+    returns (score improvement below threshold) or if the report passes.
+
+    Attributes:
+        evaluator: The ``ReportEvaluator`` used for scoring.
+        max_cycles: Maximum number of revision cycles.
+        quality_threshold: Minimum score to pass.
+        min_improvement: Minimum score gain to continue revising.
+    """
+
+    def __init__(
+        self,
+        evaluator: ReportEvaluator | None = None,
+        max_cycles: int = MAX_REVISION_CYCLES,
+        quality_threshold: float = QUALITY_THRESHOLD,
+        min_improvement: float = _DIMINISHING_RETURNS_THRESHOLD,
+    ) -> None:
+        """Initialize the revision manager.
+
+        Args:
+            evaluator: Evaluator to use. Defaults to a fresh ``ReportEvaluator``.
+            max_cycles: Maximum revision cycles (default from constant).
+            quality_threshold: Score threshold for passing (default 3.5).
+            min_improvement: Minimum score improvement to continue (default 0.1).
+        """
+        self.evaluator = evaluator or ReportEvaluator()
+        self.max_cycles = max_cycles
+        self.quality_threshold = quality_threshold
+        self.min_improvement = min_improvement
+
+    @staticmethod
+    def _build_revision_feedback(evaluation: EvaluationResult) -> str:
+        """Format evaluation results into actionable revision feedback.
+
+        Args:
+            evaluation: The evaluation result to convert to feedback.
+
+        Returns:
+            Human-readable feedback string for the revision prompt.
+        """
+        lines: list[str] = [
+            f"Overall score: {evaluation.overall_score:.1f}/5.0 "
+            f"(threshold: {QUALITY_THRESHOLD:.1f})",
+            "",
+            "Per-dimension feedback:",
+        ]
+        for dim in evaluation.dimensions:
+            lines.append(f"  - {dim.dimension} ({dim.score:.1f}/5): {dim.reasoning}")
+
+        if evaluation.overall_reasoning:
+            lines.append("")
+            lines.append(f"Assessment: {evaluation.overall_reasoning}")
+
+        if evaluation.recommendations:
+            lines.append("")
+            lines.append("Recommendations:")
+            for rec in evaluation.recommendations:
+                lines.append(f"  - {rec}")
+
+        return "\n".join(lines)
+
+    def should_revise(
+        self,
+        score: float,
+        cycle: int,
+        previous_score: float | None = None,
+    ) -> bool:
+        """Determine whether another revision cycle is warranted.
+
+        Args:
+            score: Current overall score.
+            cycle: Current cycle number (0-indexed).
+            previous_score: Score from the previous cycle (None for initial).
+
+        Returns:
+            True if revision should continue.
+        """
+        if score >= self.quality_threshold:
+            return False
+        if cycle >= self.max_cycles:
+            return False
+        if previous_score is not None:
+            improvement = score - previous_score
+            if improvement < self.min_improvement:
+                return False
+        return True
+
+    async def run(
+        self,
+        query: str,
+        report: str,
+        llm_callable: LLMCallable,
+        revision_callable: RevisionCallable,
+    ) -> RevisionResult:
+        """Run the evaluation-revision loop.
+
+        Evaluates the initial report, then iterates with revisions
+        until the report passes, max cycles are reached, or diminishing
+        returns are detected.
+
+        Args:
+            query: The original research query.
+            report: The initial report text.
+            llm_callable: Async callable for LLM evaluation.
+            revision_callable: Async callable for report revision.
+
+        Returns:
+            ``RevisionResult`` with the best report and full history.
+        """
+        history: list[RevisionRecord] = []
+        current_report = report
+        best_report = report
+        best_score = 0.0
+        best_evaluation: EvaluationResult | None = None
+        previous_score: float | None = None
+        stop_reason = ""
+
+        for cycle in range(self.max_cycles + 1):
+            evaluation = await self.evaluator.evaluate(
+                query, current_report, llm_callable
+            )
+
+            record = RevisionRecord(
+                cycle=cycle,
+                report=current_report,
+                evaluation=evaluation,
+            )
+            history.append(record)
+
+            if evaluation.overall_score > best_score:
+                best_score = evaluation.overall_score
+                best_report = current_report
+                best_evaluation = evaluation
+
+            logger.info(
+                "revision_cycle_complete",
+                cycle=cycle,
+                score=evaluation.overall_score,
+                best_score=best_score,
+                passed=evaluation.overall_score >= self.quality_threshold,
+            )
+
+            if not self.should_revise(evaluation.overall_score, cycle, previous_score):
+                if evaluation.overall_score >= self.quality_threshold:
+                    stop_reason = "passed"
+                elif cycle >= self.max_cycles:
+                    stop_reason = "max_cycles_reached"
+                else:
+                    stop_reason = "diminishing_returns"
+                break
+
+            feedback = self._build_revision_feedback(evaluation)
+            current_report = await revision_callable(current_report, feedback)
+            previous_score = evaluation.overall_score
+
+        if best_evaluation is None:
+            best_evaluation = EvaluationResult(query=query)
+
+        return RevisionResult(
+            best_report=best_report,
+            best_evaluation=best_evaluation,
+            total_cycles=len(history) - 1,
+            passed=best_score >= self.quality_threshold,
+            history=history,
+            stop_reason=stop_reason,
+        )
