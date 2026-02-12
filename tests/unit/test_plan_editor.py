@@ -59,34 +59,34 @@ class TestEditedPlan:
     """EditedPlan Pydantic model validation."""
 
     def test_single_sub_question(self) -> None:
-        plan = EditedPlan(sub_questions=[EditableSubQuestion(id=1, question="Q1")])
-        assert len(plan.sub_questions) == 1
+        plan = EditedPlan(subtopics=[EditableSubQuestion(id=1, question="Q1")])
+        assert len(plan.subtopics) == 1
 
     def test_renumbers_ids(self) -> None:
         plan = EditedPlan(
-            sub_questions=[
+            subtopics=[
                 EditableSubQuestion(id=10, question="First"),
                 EditableSubQuestion(id=20, question="Second"),
                 EditableSubQuestion(id=30, question="Third"),
             ]
         )
-        assert plan.sub_questions[0].id == 1
-        assert plan.sub_questions[1].id == 2
-        assert plan.sub_questions[2].id == 3
+        assert plan.subtopics[0].id == 1
+        assert plan.subtopics[1].id == 2
+        assert plan.subtopics[2].id == 3
 
     def test_rejects_empty_list(self) -> None:
         with pytest.raises(ValueError):
-            EditedPlan(sub_questions=[])
+            EditedPlan(subtopics=[])
 
     def test_max_20_sub_questions(self) -> None:
         sqs = [EditableSubQuestion(id=i, question=f"Q{i}") for i in range(1, 21)]
-        plan = EditedPlan(sub_questions=sqs)
-        assert len(plan.sub_questions) == 20
+        plan = EditedPlan(subtopics=sqs)
+        assert len(plan.subtopics) == 20
 
     def test_rejects_over_20_sub_questions(self) -> None:
         sqs = [EditableSubQuestion(id=i, question=f"Q{i}") for i in range(1, 22)]
         with pytest.raises(ValueError):
-            EditedPlan(sub_questions=sqs)
+            EditedPlan(subtopics=sqs)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ class TestPlanToYaml:
     def test_contains_header(self) -> None:
         yaml_str = plan_to_yaml([])
         assert "Research Plan Editor" in yaml_str
-        assert "sub_questions:" in yaml_str
+        assert "subtopics:" in yaml_str
 
     def test_includes_question_text(self) -> None:
         sqs = [{"id": 1, "question": "What is RAG?", "rationale": "Core"}]
@@ -195,14 +195,14 @@ class TestYamlToPlan:
 
     def test_valid_yaml(self) -> None:
         yaml_str = (
-            "sub_questions:\n"
+            "subtopics:\n"
             "  - id: 1\n"
             "    question: Test question\n"
             "    rationale: Test rationale\n"
         )
         plan = yaml_to_plan(yaml_str)
         assert plan is not None
-        assert plan.sub_questions[0].question == "Test question"
+        assert plan.subtopics[0].question == "Test question"
 
     def test_empty_string_returns_none(self) -> None:
         assert yaml_to_plan("") is None
@@ -220,17 +220,17 @@ class TestYamlToPlan:
         assert yaml_to_plan("other_key: value") is None
 
     def test_empty_sub_questions_returns_none(self) -> None:
-        assert yaml_to_plan("sub_questions: []") is None
+        assert yaml_to_plan("subtopics: []") is None
 
     def test_sub_questions_not_list_returns_none(self) -> None:
-        assert yaml_to_plan("sub_questions: not_a_list") is None
+        assert yaml_to_plan("subtopics: not_a_list") is None
 
     def test_invalid_sub_question_returns_none(self) -> None:
-        yaml_str = 'sub_questions:\n  - id: 0\n    question: ""\n'
+        yaml_str = 'subtopics:\n  - id: 0\n    question: ""\n'
         assert yaml_to_plan(yaml_str) is None
 
     def test_comments_ignored(self) -> None:
-        yaml_str = "# A comment\nsub_questions:\n  - id: 1\n    question: Q1\n"
+        yaml_str = "# A comment\nsubtopics:\n  - id: 1\n    question: Q1\n"
         plan = yaml_to_plan(yaml_str)
         assert plan is not None
 
@@ -270,7 +270,7 @@ class TestEditPlanInEditor:
     def test_successful_edit(self) -> None:
         sqs = [{"id": 1, "question": "Original", "rationale": "R"}]
         edited_yaml = (
-            "sub_questions:\n"
+            "subtopics:\n"
             "  - id: 1\n"
             "    question: Modified\n"
             "    rationale: Updated\n"
@@ -287,7 +287,7 @@ class TestEditPlanInEditor:
             plan = edit_plan_in_editor(sqs)
 
         assert plan is not None
-        assert plan.sub_questions[0].question == "Modified"
+        assert plan.subtopics[0].question == "Modified"
 
     def test_editor_exit_nonzero(self) -> None:
         sqs = [{"id": 1, "question": "Q", "rationale": "R"}]
@@ -347,8 +347,8 @@ class TestEditPlanInline:
         with patch("builtins.input", return_value="1"):
             plan = edit_plan_inline(sqs)
         assert plan is not None
-        assert len(plan.sub_questions) == 1
-        assert plan.sub_questions[0].question == "Q2"
+        assert len(plan.subtopics) == 1
+        assert plan.subtopics[0].question == "Q2"
 
     def test_remove_multiple_items(self) -> None:
         sqs = [
@@ -359,8 +359,8 @@ class TestEditPlanInline:
         with patch("builtins.input", return_value="1, 3"):
             plan = edit_plan_inline(sqs)
         assert plan is not None
-        assert len(plan.sub_questions) == 1
-        assert plan.sub_questions[0].question == "Q2"
+        assert len(plan.subtopics) == 1
+        assert plan.subtopics[0].question == "Q2"
 
     def test_remove_all_returns_none(self) -> None:
         sqs = [{"id": 1, "question": "Q1", "rationale": "R1"}]
@@ -412,7 +412,7 @@ class TestEditPlanInline:
         with patch("builtins.input", return_value="99"):
             plan = edit_plan_inline(sqs)
         assert plan is not None
-        assert len(plan.sub_questions) == 2
+        assert len(plan.subtopics) == 2
 
     def test_renumbers_after_removal(self) -> None:
         sqs = [
@@ -423,5 +423,5 @@ class TestEditPlanInline:
         with patch("builtins.input", return_value="2"):
             plan = edit_plan_inline(sqs)
         assert plan is not None
-        assert plan.sub_questions[0].id == 1
-        assert plan.sub_questions[1].id == 2
+        assert plan.subtopics[0].id == 1
+        assert plan.subtopics[1].id == 2

@@ -17,7 +17,7 @@ from research_agent.nodes.scraper import (
     _scrape_batch,
     scrape_node,
 )
-from research_agent.state import ScrapedContent, SearchResult
+from research_agent.state import ScrapedPage, SearchResult
 
 # ---- Fixtures ---------------------------------------------------------------
 
@@ -26,7 +26,7 @@ from research_agent.state import ScrapedContent, SearchResult
 def search_result() -> SearchResult:
     """A sample SearchResult for scraping."""
     return SearchResult(
-        sub_question_id=1,
+        subtopic_id=1,
         query="What is RAG?",
         title="RAG Overview",
         url="https://example.com/rag",
@@ -154,7 +154,7 @@ class TestFetchAndExtract:
     """Async fetch + Trafilatura extraction."""
 
     @pytest.mark.asyncio()
-    async def test_returns_scraped_content_on_success(
+    async def test_returns_scraped_page_on_success(
         self, search_result: SearchResult, good_article: str
     ) -> None:
         mock_response = MagicMock()
@@ -176,9 +176,9 @@ class TestFetchAndExtract:
             result = await _fetch_and_extract(search_result)
 
         assert result is not None
-        assert isinstance(result, ScrapedContent)
+        assert isinstance(result, ScrapedPage)
         assert result.url == search_result.url
-        assert result.sub_question_id == search_result.sub_question_id
+        assert result.subtopic_id == search_result.subtopic_id
         assert result.word_count > 0
         assert 0.0 <= result.quality_score <= 1.0
 
@@ -328,13 +328,13 @@ class TestScrapeBatch:
     async def test_scrapes_multiple_results(self) -> None:
         results = [
             SearchResult(
-                sub_question_id=1, query="q", url=f"https://a.com/{i}", score=0.9
+                subtopic_id=1, query="q", url=f"https://a.com/{i}", score=0.9
             )
             for i in range(3)
         ]
-        content = ScrapedContent(
+        content = ScrapedPage(
             url="https://a.com/0",
-            sub_question_id=1,
+            subtopic_id=1,
             content="test",
             word_count=1,
             quality_score=0.8,
@@ -352,17 +352,17 @@ class TestScrapeBatch:
     async def test_filters_out_none_results(self) -> None:
         results = [
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/0", score=0.9
+                subtopic_id=1, query="q", url="https://a.com/0", score=0.9
             ),
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/1", score=0.8
+                subtopic_id=1, query="q", url="https://a.com/1", score=0.8
             ),
         ]
         mock_fetch = AsyncMock(
             side_effect=[
-                ScrapedContent(
+                ScrapedPage(
                     url="https://a.com/0",
-                    sub_question_id=1,
+                    subtopic_id=1,
                     content="ok",
                     word_count=1,
                     quality_score=0.8,
@@ -387,7 +387,7 @@ class TestScrapeBatch:
     async def test_all_failures_returns_empty(self) -> None:
         results = [
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/0", score=0.9
+                subtopic_id=1, query="q", url="https://a.com/0", score=0.9
             ),
         ]
         with patch(
@@ -410,7 +410,7 @@ class TestScrapeNode:
     async def test_returns_empty_when_no_search_results(self) -> None:
         state: dict[str, Any] = {"search_results": []}
         result = await scrape_node(state)
-        assert result["scraped_content"] == []
+        assert result["scraped_pages"] == []
         assert result["step"] == "scrape"
         assert result["step_index"] == 2
 
@@ -419,13 +419,13 @@ class TestScrapeNode:
         state: dict[str, Any] = {
             "search_results": [
                 SearchResult(
-                    sub_question_id=1, query="q", url="https://a.com", score=0.9
+                    subtopic_id=1, query="q", url="https://a.com", score=0.9
                 ),
             ],
         }
-        good_content = ScrapedContent(
+        good_content = ScrapedPage(
             url="https://a.com",
-            sub_question_id=1,
+            subtopic_id=1,
             content="test content",
             word_count=100,
             quality_score=0.8,
@@ -437,21 +437,21 @@ class TestScrapeNode:
         ):
             result = await scrape_node(state)
 
-        assert len(result["scraped_content"]) == 1
-        assert result["scraped_content"][0].quality_score == 0.8
+        assert len(result["scraped_pages"]) == 1
+        assert result["scraped_pages"][0].quality_score == 0.8
 
     @pytest.mark.asyncio()
     async def test_rejects_low_quality_content(self) -> None:
         state: dict[str, Any] = {
             "search_results": [
                 SearchResult(
-                    sub_question_id=1, query="q", url="https://a.com", score=0.9
+                    subtopic_id=1, query="q", url="https://a.com", score=0.9
                 ),
             ],
         }
-        low_quality = ScrapedContent(
+        low_quality = ScrapedPage(
             url="https://a.com",
-            sub_question_id=1,
+            subtopic_id=1,
             content="short",
             word_count=1,
             quality_score=0.2,  # Below _MIN_QUALITY_SCORE (0.4)
@@ -463,20 +463,20 @@ class TestScrapeNode:
         ):
             result = await scrape_node(state)
 
-        assert result["scraped_content"] == []
+        assert result["scraped_pages"] == []
 
     @pytest.mark.asyncio()
     async def test_accepts_flagged_quality_content(self) -> None:
         state: dict[str, Any] = {
             "search_results": [
                 SearchResult(
-                    sub_question_id=1, query="q", url="https://a.com", score=0.9
+                    subtopic_id=1, query="q", url="https://a.com", score=0.9
                 ),
             ],
         }
-        flagged = ScrapedContent(
+        flagged = ScrapedPage(
             url="https://a.com",
-            sub_question_id=1,
+            subtopic_id=1,
             content="medium quality content",
             word_count=50,
             quality_score=0.5,  # Between 0.4 and 0.7 (flagged but accepted)
@@ -488,36 +488,36 @@ class TestScrapeNode:
         ):
             result = await scrape_node(state)
 
-        assert len(result["scraped_content"]) == 1
+        assert len(result["scraped_pages"]) == 1
 
     @pytest.mark.asyncio()
     async def test_mixed_quality_filtering(self) -> None:
         state: dict[str, Any] = {
             "search_results": [
                 SearchResult(
-                    sub_question_id=1, query="q", url=f"https://a.com/{i}", score=0.9
+                    subtopic_id=1, query="q", url=f"https://a.com/{i}", score=0.9
                 )
                 for i in range(3)
             ],
         }
         scraped = [
-            ScrapedContent(
+            ScrapedPage(
                 url="https://a.com/0",
-                sub_question_id=1,
+                subtopic_id=1,
                 content="good",
                 word_count=500,
                 quality_score=0.9,
             ),
-            ScrapedContent(
+            ScrapedPage(
                 url="https://a.com/1",
-                sub_question_id=1,
+                subtopic_id=1,
                 content="bad",
                 word_count=5,
                 quality_score=0.1,
             ),
-            ScrapedContent(
+            ScrapedPage(
                 url="https://a.com/2",
-                sub_question_id=1,
+                subtopic_id=1,
                 content="ok",
                 word_count=100,
                 quality_score=0.5,
@@ -531,8 +531,8 @@ class TestScrapeNode:
             result = await scrape_node(state)
 
         # Good (0.9) and OK (0.5) accepted, bad (0.1) rejected
-        assert len(result["scraped_content"]) == 2
-        scores = [c.quality_score for c in result["scraped_content"]]
+        assert len(result["scraped_pages"]) == 2
+        scores = [c.quality_score for c in result["scraped_pages"]]
         assert 0.1 not in scores
 
     @pytest.mark.asyncio()
@@ -547,7 +547,7 @@ class TestScrapeNode:
         state: dict[str, Any] = {
             "search_results": [
                 SearchResult(
-                    sub_question_id=1, query="q", url="https://a.com", score=0.9
+                    subtopic_id=1, query="q", url="https://a.com", score=0.9
                 ),
             ],
         }
@@ -558,5 +558,5 @@ class TestScrapeNode:
         ):
             result = await scrape_node(state)
 
-        assert result["scraped_content"] == []
+        assert result["scraped_pages"] == []
         assert result["step"] == "scrape"

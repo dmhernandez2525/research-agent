@@ -17,7 +17,7 @@ from research_agent.nodes.synthesizer import (
     _validate_citations,
     synthesize_node,
 )
-from research_agent.state import Source, Summary
+from research_agent.state import Source, SubtopicSummary
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -25,18 +25,18 @@ from research_agent.state import Source, Summary
 
 
 @pytest.fixture()
-def summaries() -> list[Summary]:
+def summaries() -> list[SubtopicSummary]:
     """Sample summaries from two sub-questions."""
     return [
-        Summary(
-            sub_question_id=1,
+        SubtopicSummary(
+            subtopic_id=1,
             sub_question="What is RAG?",
             summary="RAG combines retrieval and generation for better results.",
             source_urls=["https://a.com/rag", "https://b.com/rag"],
             key_findings=["RAG improves accuracy", "RAG reduces hallucination"],
         ),
-        Summary(
-            sub_question_id=2,
+        SubtopicSummary(
+            subtopic_id=2,
             sub_question="How does fine-tuning compare?",
             summary="Fine-tuning adapts models to specific domains.",
             source_urls=["https://c.com/ft", "https://a.com/rag"],  # shared URL
@@ -107,13 +107,13 @@ def mock_synthesis_no_sources() -> SynthesisOutput:
 class TestBuildCitationIndex:
     """_build_citation_index assigns global citation numbers."""
 
-    def test_assigns_sequential_numbers(self, summaries: list[Summary]) -> None:
+    def test_assigns_sequential_numbers(self, summaries: list[SubtopicSummary]) -> None:
         index = _build_citation_index(summaries)
         assert index["https://a.com/rag"] == 1
         assert index["https://b.com/rag"] == 2
         assert index["https://c.com/ft"] == 3
 
-    def test_deduplicates_shared_urls(self, summaries: list[Summary]) -> None:
+    def test_deduplicates_shared_urls(self, summaries: list[SubtopicSummary]) -> None:
         index = _build_citation_index(summaries)
         # https://a.com/rag appears in both summaries but gets one number
         assert len(index) == 3
@@ -124,7 +124,7 @@ class TestBuildCitationIndex:
 
     def test_summaries_without_urls(self) -> None:
         summaries = [
-            Summary(sub_question_id=1, summary="No sources.", key_findings=["F"]),
+            SubtopicSummary(subtopic_id=1, summary="No sources.", key_findings=["F"]),
         ]
         index = _build_citation_index(summaries)
         assert index == {}
@@ -140,7 +140,7 @@ class TestFormatContextWithCitations:
 
     def test_includes_citation_references(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         citation_index: dict[str, int],
     ) -> None:
         result = _format_context_with_citations(summaries, citation_index)
@@ -149,7 +149,7 @@ class TestFormatContextWithCitations:
 
     def test_includes_citation_legend(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         citation_index: dict[str, int],
     ) -> None:
         result = _format_context_with_citations(summaries, citation_index)
@@ -158,7 +158,7 @@ class TestFormatContextWithCitations:
 
     def test_includes_key_findings(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         citation_index: dict[str, int],
     ) -> None:
         result = _format_context_with_citations(summaries, citation_index)
@@ -167,7 +167,7 @@ class TestFormatContextWithCitations:
 
     def test_includes_sub_question_headers(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         citation_index: dict[str, int],
     ) -> None:
         result = _format_context_with_citations(summaries, citation_index)
@@ -183,12 +183,12 @@ class TestFormatContextWithCitations:
 class TestBuildSynthesisContext:
     """_build_synthesis_context formats summaries for the LLM."""
 
-    def test_includes_all_summaries(self, summaries: list[Summary]) -> None:
+    def test_includes_all_summaries(self, summaries: list[SubtopicSummary]) -> None:
         result = _build_synthesis_context(summaries)
         assert "What is RAG?" in result
         assert "How does fine-tuning compare?" in result
 
-    def test_includes_source_urls(self, summaries: list[Summary]) -> None:
+    def test_includes_source_urls(self, summaries: list[SubtopicSummary]) -> None:
         result = _build_synthesis_context(summaries)
         assert "https://a.com/rag" in result
 
@@ -401,11 +401,11 @@ class TestSynthesizeNode:
     @pytest.mark.asyncio()
     async def test_produces_report_with_sources(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         mock_synthesis_result: SynthesisOutput,
     ) -> None:
         state = {
-            "summaries": summaries,
+            "subtopic_summaries": summaries,
             "query": "RAG vs fine-tuning",
         }
 
@@ -423,7 +423,7 @@ class TestSynthesizeNode:
 
     @pytest.mark.asyncio()
     async def test_empty_summaries_returns_empty(self) -> None:
-        state = {"summaries": [], "query": "test"}
+        state = {"subtopic_summaries": [], "query": "test"}
         result = await synthesize_node(state)
         assert result["final_report"] == ""
         assert result["sources"] == []
@@ -431,11 +431,11 @@ class TestSynthesizeNode:
     @pytest.mark.asyncio()
     async def test_appends_sources_section_if_missing(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         mock_synthesis_no_sources: SynthesisOutput,
     ) -> None:
         state = {
-            "summaries": summaries,
+            "subtopic_summaries": summaries,
             "query": "test query",
         }
 
@@ -451,11 +451,11 @@ class TestSynthesizeNode:
     @pytest.mark.asyncio()
     async def test_does_not_duplicate_sources_section(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         mock_synthesis_result: SynthesisOutput,
     ) -> None:
         state = {
-            "summaries": summaries,
+            "subtopic_summaries": summaries,
             "query": "test query",
         }
 
@@ -473,10 +473,10 @@ class TestSynthesizeNode:
     @pytest.mark.asyncio()
     async def test_handles_llm_failure_gracefully(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
     ) -> None:
         state = {
-            "summaries": summaries,
+            "subtopic_summaries": summaries,
             "query": "test query",
         }
 
@@ -493,11 +493,11 @@ class TestSynthesizeNode:
     @pytest.mark.asyncio()
     async def test_source_models_have_timestamps(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
         mock_synthesis_result: SynthesisOutput,
     ) -> None:
         state = {
-            "summaries": summaries,
+            "subtopic_summaries": summaries,
             "query": "test",
         }
 
@@ -514,7 +514,7 @@ class TestSynthesizeNode:
     @pytest.mark.asyncio()
     async def test_citation_warnings_logged(
         self,
-        summaries: list[Summary],
+        summaries: list[SubtopicSummary],
     ) -> None:
         """Invalid citations in the report should generate warnings."""
         bad_result = SynthesisOutput(
@@ -523,7 +523,7 @@ class TestSynthesizeNode:
             sources=[],
         )
         state = {
-            "summaries": summaries,
+            "subtopic_summaries": summaries,
             "query": "test",
         }
 

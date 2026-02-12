@@ -309,14 +309,14 @@ class TestGraphEdgeRouting:
         state: dict[str, Any] = {
             "search_results": [MagicMock()] * 5,
             "search_retry_count": 0,
-            "scraped_content": [],
-            "sub_questions": [MagicMock()],
+            "scraped_pages": [],
+            "subtopics": [MagicMock()],
             "current_subtopic_index": 0,
         }
         assert _should_continue_search(state) == "scrape"
 
         # After scrape: has content -> summarize
-        state["scraped_content"] = [MagicMock()]
+        state["scraped_pages"] = [MagicMock()]
         assert _should_continue_scrape(state) == "summarize"
 
         # After summarize: index incremented to 1, only 1 subtopic -> synthesize
@@ -333,7 +333,7 @@ class TestGraphEdgeRouting:
         state: dict[str, Any] = {
             "search_results": [MagicMock()] * 3,
             "search_retry_count": 0,
-            "sub_questions": [MagicMock(), MagicMock(), MagicMock()],
+            "subtopics": [MagicMock(), MagicMock(), MagicMock()],
             "current_subtopic_index": 0,
         }
 
@@ -542,9 +542,9 @@ class TestPlanEditorE2E:
 
         plan = yaml_to_plan(yaml_str)
         assert plan is not None
-        assert len(plan.sub_questions) == 2
-        assert plan.sub_questions[0].question == "What is RAG?"
-        assert plan.sub_questions[1].id == 2
+        assert len(plan.subtopics) == 2
+        assert plan.subtopics[0].question == "What is RAG?"
+        assert plan.subtopics[1].id == 2
 
     def test_yaml_with_special_characters(self) -> None:
         from research_agent.plan_editor import plan_to_yaml, yaml_to_plan
@@ -560,7 +560,7 @@ class TestPlanEditorE2E:
         yaml_str = plan_to_yaml(sub_questions)
         plan = yaml_to_plan(yaml_str)
         assert plan is not None
-        assert "LLMs" in plan.sub_questions[0].question
+        assert "LLMs" in plan.subtopics[0].question
 
     def test_empty_yaml_returns_none(self) -> None:
         from research_agent.plan_editor import yaml_to_plan
@@ -573,7 +573,7 @@ class TestPlanEditorE2E:
 
         assert yaml_to_plan("{{invalid yaml:::") is None
 
-    def test_yaml_missing_sub_questions_returns_none(self) -> None:
+    def test_yaml_missing_subtopics_returns_none(self) -> None:
         from research_agent.plan_editor import yaml_to_plan
 
         assert yaml_to_plan("other_key: value") is None
@@ -582,13 +582,13 @@ class TestPlanEditorE2E:
         from research_agent.plan_editor import EditableSubQuestion, EditedPlan
 
         plan = EditedPlan(
-            sub_questions=[
+            subtopics=[
                 EditableSubQuestion(id=5, question="First", rationale=""),
                 EditableSubQuestion(id=10, question="Second", rationale=""),
             ]
         )
-        assert plan.sub_questions[0].id == 1
-        assert plan.sub_questions[1].id == 2
+        assert plan.subtopics[0].id == 1
+        assert plan.subtopics[1].id == 2
 
     def test_inline_edit_removes_by_id(self) -> None:
         from research_agent.plan_editor import edit_plan_inline
@@ -604,8 +604,8 @@ class TestPlanEditorE2E:
             result = edit_plan_inline(sub_questions)
 
         assert result is not None
-        assert len(result.sub_questions) == 2
-        questions = [sq.question for sq in result.sub_questions]
+        assert len(result.subtopics) == 2
+        questions = [sq.question for sq in result.subtopics]
         assert "Q1" in questions
         assert "Q3" in questions
 
@@ -641,7 +641,7 @@ class TestPlanEditorE2E:
         ]
 
         edited_yaml = (
-            "sub_questions:\n"
+            "subtopics:\n"
             "  - id: 1\n"
             "    question: Edited question\n"
             "    rationale: Updated rationale\n"
@@ -661,7 +661,7 @@ class TestPlanEditorE2E:
             result = edit_plan_in_editor(sub_questions)
 
         assert result is not None
-        assert result.sub_questions[0].question == "Edited question"
+        assert result.subtopics[0].question == "Edited question"
 
     def test_editor_nonzero_exit_returns_none(self) -> None:
         from research_agent.plan_editor import edit_plan_in_editor

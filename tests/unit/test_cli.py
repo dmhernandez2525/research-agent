@@ -510,11 +510,11 @@ class TestPlanDisplay:
     """Plan approval workflow display."""
 
     def test_display_plan_no_error(self) -> None:
-        sub_questions = [
+        subtopics = [
             {"id": 1, "question": "What is RAG?", "rationale": "Core concept"},
             {"id": 2, "question": "How does it work?", "rationale": "Implementation"},
         ]
-        _display_plan(sub_questions)
+        _display_plan(subtopics)
 
     def test_display_plan_empty(self) -> None:
         _display_plan([])

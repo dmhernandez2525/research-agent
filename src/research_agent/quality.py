@@ -94,7 +94,7 @@ def _count_citations(report: str) -> int:
 
 def _check_subtopic_coverage(
     report: str,
-    sub_questions: list[dict[str, Any]] | list[Any],
+    subtopics: list[dict[str, Any]] | list[Any],
 ) -> float:
     """Check what fraction of subtopics are mentioned in the report.
 
@@ -103,18 +103,18 @@ def _check_subtopic_coverage(
 
     Args:
         report: The report Markdown text.
-        sub_questions: Sub-questions to check coverage for.
+        subtopics: Subtopics to check coverage for.
 
     Returns:
         Coverage ratio between 0.0 and 1.0.
     """
-    if not sub_questions:
+    if not subtopics:
         return 1.0
 
     report_lower = report.lower()
     covered = 0
 
-    for sq in sub_questions:
+    for sq in subtopics:
         question = (
             sq.get("question", "")
             if isinstance(sq, dict)
@@ -135,7 +135,7 @@ def _check_subtopic_coverage(
         if matches / len(words) >= 0.4:
             covered += 1
 
-    return covered / len(sub_questions)
+    return covered / len(subtopics)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ def _check_subtopic_coverage(
 
 def check_report_quality(
     report: str,
-    sub_questions: list[dict[str, Any]] | list[Any] | None = None,
+    subtopics: list[dict[str, Any]] | list[Any] | None = None,
 ) -> QualityResult:
     """Run all quality checks on a generated report.
 
@@ -155,7 +155,7 @@ def check_report_quality(
 
     Args:
         report: The generated Markdown report.
-        sub_questions: Sub-questions for coverage checking.
+        subtopics: Subtopics for coverage checking.
 
     Returns:
         A ``QualityResult`` with pass/fail and detailed metrics.
@@ -191,7 +191,7 @@ def check_report_quality(
         warnings.append("No citation references found in report")
 
     # Subtopic coverage
-    sqs = sub_questions or []
+    sqs = subtopics or []
     subtopic_coverage = _check_subtopic_coverage(report, sqs)
     subtopic_coverage_ok = subtopic_coverage >= _MIN_SUBTOPIC_COVERAGE
     if not subtopic_coverage_ok and sqs:

@@ -21,7 +21,7 @@ from research_agent.nodes.summarizer import (
     _group_content_by_question,
     summarize_node,
 )
-from research_agent.state import ScrapedContent, SearchResult, SubQuestion, Summary
+from research_agent.state import ScrapedPage, SearchResult, Subtopic, SubtopicSummary
 
 pytestmark = pytest.mark.integration
 
@@ -32,10 +32,10 @@ pytestmark = pytest.mark.integration
 
 
 def _make_search_result(
-    url: str, sub_question_id: int = 1, score: float = 0.8, title: str = ""
+    url: str, subtopic_id: int = 1, score: float = 0.8, title: str = ""
 ) -> SearchResult:
     return SearchResult(
-        sub_question_id=sub_question_id,
+        subtopic_id=subtopic_id,
         query="test query",
         title=title or f"Title for {url}",
         url=url,
@@ -44,16 +44,16 @@ def _make_search_result(
     )
 
 
-def _make_scraped_content(
+def _make_scraped_page(
     url: str,
-    sub_question_id: int = 1,
+    subtopic_id: int = 1,
     content: str = "",
     quality_score: float = 0.8,
-) -> ScrapedContent:
+) -> ScrapedPage:
     text = content or f"Detailed article content from {url}. " * 50
-    return ScrapedContent(
+    return ScrapedPage(
         url=url,
-        sub_question_id=sub_question_id,
+        subtopic_id=subtopic_id,
         title=f"Page: {url}",
         content=text,
         word_count=len(text.split()),
@@ -78,10 +78,10 @@ class TestSearchToScrapePipeline:
             _make_search_result("https://example.com/article-3"),
         ]
 
-        async def mock_fetch(result: Any, **kwargs: Any) -> ScrapedContent:
-            return ScrapedContent(
+        async def mock_fetch(result: Any, **kwargs: Any) -> ScrapedPage:
+            return ScrapedPage(
                 url=result.url,
-                sub_question_id=result.sub_question_id,
+                subtopic_id=result.subtopic_id,
                 title=result.title,
                 content="Good content. " * 100,
                 word_count=200,
@@ -95,7 +95,7 @@ class TestSearchToScrapePipeline:
             state: dict[str, Any] = {"search_results": search_results}
             result = await scrape_node(state)
 
-        scraped = result["scraped_content"]
+        scraped = result["scraped_pages"]
         assert len(scraped) == 3
         scraped_urls = {item.url for item in scraped}
         for sr in search_results:
@@ -110,12 +110,12 @@ class TestSearchToScrapePipeline:
             _make_search_result("https://example.com/good-2"),
         ]
 
-        async def mock_fetch(result: Any, **kwargs: Any) -> ScrapedContent | None:
+        async def mock_fetch(result: Any, **kwargs: Any) -> ScrapedPage | None:
             if "fail" in result.url:
                 return None  # Simulate failed scrape
-            return ScrapedContent(
+            return ScrapedPage(
                 url=result.url,
-                sub_question_id=result.sub_question_id,
+                subtopic_id=result.subtopic_id,
                 title=result.title,
                 content="Good content. " * 100,
                 word_count=200,
@@ -129,7 +129,7 @@ class TestSearchToScrapePipeline:
             state: dict[str, Any] = {"search_results": search_results}
             result = await scrape_node(state)
 
-        scraped = result["scraped_content"]
+        scraped = result["scraped_pages"]
         # Should have 2 successful scrapes (the "fail" URL returned None)
         assert len(scraped) == 2
         scraped_urls = {item.url for item in scraped}
@@ -147,15 +147,15 @@ class TestScrapeToSummarizePipeline:
     @pytest.mark.asyncio()
     async def test_each_scraped_page_gets_summary(self) -> None:
         """Content for a sub-question should produce one summary."""
-        sub_q = SubQuestion(id=1, question="What is RAG?")
+        sub_q = Subtopic(id=1, question="What is RAG?")
         scraped = [
-            _make_scraped_content("https://a.com", sub_question_id=1),
-            _make_scraped_content("https://b.com", sub_question_id=1),
-            _make_scraped_content("https://c.com", sub_question_id=1),
+            _make_scraped_page("https://a.com", subtopic_id=1),
+            _make_scraped_page("https://b.com", subtopic_id=1),
+            _make_scraped_page("https://c.com", subtopic_id=1),
         ]
 
-        mock_summary = Summary(
-            sub_question_id=1,
+        mock_summary = SubtopicSummary(
+            subtopic_id=1,
             sub_question="What is RAG?",
             summary="RAG combines retrieval with generation.",
             source_urls=["https://a.com", "https://b.com", "https://c.com"],
@@ -167,13 +167,13 @@ class TestScrapeToSummarizePipeline:
             return_value=mock_summary,
         ):
             state: dict[str, Any] = {
-                "scraped_content": scraped,
-                "sub_questions": [sub_q],
+                "scraped_pages": scraped,
+                "subtopics": [sub_q],
                 "current_subtopic_index": 0,
             }
             result = await summarize_node(state)
 
-        summaries = result["summaries"]
+        summaries = result["subtopic_summaries"]
         assert len(summaries) == 1
         assert "RAG" in summaries[0].summary
 
@@ -225,7 +225,7 @@ class TestEndToEndSearchPipeline:
                 "score": 0.72,
             },
         ]
-        results = _parse_results(raw_results, sub_question_id=1, query="RAG")
+        results = _parse_results(raw_results, subtopic_id=1, query="RAG")
 
         # Low-relevance result should be filtered out
         assert len(results) == 2
@@ -237,13 +237,13 @@ class TestEndToEndSearchPipeline:
         """If two sub-queries return the same URL, dedup keeps only the first."""
         results = [
             _make_search_result(
-                "https://example.com/article", sub_question_id=1, score=0.9
+                "https://example.com/article", subtopic_id=1, score=0.9
             ),
             _make_search_result(
-                "https://example.com/article", sub_question_id=2, score=0.85
+                "https://example.com/article", subtopic_id=2, score=0.85
             ),
             _make_search_result(
-                "https://example.com/different", sub_question_id=2, score=0.7
+                "https://example.com/different", subtopic_id=2, score=0.7
             ),
         ]
 
@@ -259,8 +259,8 @@ class TestEndToEndSearchPipeline:
         with_tracking = "https://example.com/article?utm_source=google&fbclid=abc"
 
         results = [
-            _make_search_result(base, sub_question_id=1),
-            _make_search_result(with_tracking, sub_question_id=2),
+            _make_search_result(base, subtopic_id=1),
+            _make_search_result(with_tracking, subtopic_id=2),
         ]
 
         deduped = _deduplicate_results(results)
@@ -269,10 +269,10 @@ class TestEndToEndSearchPipeline:
     def test_content_grouping_by_sub_question(self) -> None:
         """Scraped content should be correctly grouped by sub-question ID."""
         content_items = [
-            _make_scraped_content("https://a.com", sub_question_id=1),
-            _make_scraped_content("https://b.com", sub_question_id=2),
-            _make_scraped_content("https://c.com", sub_question_id=1),
-            _make_scraped_content("https://d.com", sub_question_id=2),
+            _make_scraped_page("https://a.com", subtopic_id=1),
+            _make_scraped_page("https://b.com", subtopic_id=2),
+            _make_scraped_page("https://c.com", subtopic_id=1),
+            _make_scraped_page("https://d.com", subtopic_id=2),
         ]
 
         groups = _group_content_by_question(content_items)
@@ -283,8 +283,8 @@ class TestEndToEndSearchPipeline:
     def test_content_block_formatting(self) -> None:
         """_build_content_block produces formatted text with source attribution."""
         items = [
-            _make_scraped_content("https://a.com", content="First article content."),
-            _make_scraped_content("https://b.com", content="Second article content."),
+            _make_scraped_page("https://a.com", content="First article content."),
+            _make_scraped_page("https://b.com", content="Second article content."),
         ]
         block = _build_content_block(items)
         assert "Source: Page: https://a.com" in block

@@ -39,11 +39,11 @@ class TestCrashSimulation:
         mgr: CheckpointManager,
         sample_state: dict[str, Any],
     ) -> None:
-        """If a crash occurs after planning, resume should preserve sub_questions."""
+        """If a crash occurs after planning, resume should preserve subtopics."""
         # Simulate planner output
         sample_state["step"] = "plan"
         sample_state["step_index"] = 1
-        sample_state["sub_questions"] = [
+        sample_state["subtopics"] = [
             {"id": 1, "question": "What is RAG?"},
             {"id": 2, "question": "How does adaptive retrieval work?"},
         ]
@@ -58,8 +58,8 @@ class TestCrashSimulation:
 
         assert loaded["step"] == "plan"
         assert loaded["step_index"] == 1
-        assert len(loaded["sub_questions"]) == 2
-        assert loaded["sub_questions"][0]["question"] == "What is RAG?"
+        assert len(loaded["subtopics"]) == 2
+        assert loaded["subtopics"][0]["question"] == "What is RAG?"
 
     def test_crash_after_search_resumes_with_results(
         self,
@@ -70,8 +70,8 @@ class TestCrashSimulation:
         sample_state["step"] = "search"
         sample_state["step_index"] = 2
         sample_state["search_results"] = [
-            {"sub_question_id": 1, "query": "RAG", "url": "https://example.com/1"},
-            {"sub_question_id": 1, "query": "RAG", "url": "https://example.com/2"},
+            {"subtopic_id": 1, "query": "RAG", "url": "https://example.com/1"},
+            {"subtopic_id": 1, "query": "RAG", "url": "https://example.com/2"},
         ]
 
         cp_id = f"{generate_run_id()}-step-2"
@@ -93,7 +93,7 @@ class TestCrashSimulation:
         # Simulate scraping 2 of 5 URLs before crash
         sample_state["step"] = "scrape"
         sample_state["step_index"] = 3
-        sample_state["scraped_content"] = [
+        sample_state["scraped_pages"] = [
             {"url": "https://example.com/1", "content": "Content A", "word_count": 100},
             {"url": "https://example.com/2", "content": "Content B", "word_count": 200},
         ]
@@ -108,9 +108,9 @@ class TestCrashSimulation:
         restored_mgr = CheckpointManager(directory=mgr.directory, max_checkpoints=10)
         loaded = restored_mgr.load(cp_id)
 
-        assert len(loaded["scraped_content"]) == 2
+        assert len(loaded["scraped_pages"]) == 2
         assert len(loaded["seen_urls"]) == 2
-        assert loaded["scraped_content"][0]["content"] == "Content A"
+        assert loaded["scraped_pages"][0]["content"] == "Content A"
 
     def test_corrupted_checkpoint_detected_on_resume(
         self,
@@ -148,7 +148,7 @@ class TestResumeVerification:
             "query": "test",
             "step": "plan",
             "step_index": 1,
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
         }
         mgr.save(f"{run_id}-step-1", state_v1, step_index=1, step_name="plan")
         time.sleep(0.05)
@@ -169,7 +169,7 @@ class TestResumeVerification:
         loaded = mgr.load(latest_id)
         assert loaded["step"] == "search"
         assert loaded["step_index"] == 2
-        assert len(loaded["sub_questions"]) == 1
+        assert len(loaded["subtopics"]) == 1
         assert len(loaded["search_results"]) == 1
 
     def test_cost_accumulates_across_resume(
@@ -209,7 +209,7 @@ class TestResumeVerification:
         state: dict[str, Any] = {
             "query": "test",
             "current_subtopic_index": 2,
-            "sub_questions": [{"id": i} for i in range(5)],
+            "subtopics": [{"id": i} for i in range(5)],
         }
         mgr.save(f"{run_id}-iter-2", state, step_index=2, step_name="summarize")
 
@@ -247,15 +247,15 @@ class TestResumeVerification:
         """Large state with nested structures survives save/load."""
         state: dict[str, Any] = {
             "query": "complex query",
-            "sub_questions": [
+            "subtopics": [
                 {"id": i, "question": f"Question {i}", "rationale": f"Because {i}"}
                 for i in range(20)
             ],
             "search_results": [
-                {"sub_question_id": i, "query": f"q{i}", "url": f"https://site{i}.com"}
+                {"subtopic_id": i, "query": f"q{i}", "url": f"https://site{i}.com"}
                 for i in range(50)
             ],
-            "scraped_content": [
+            "scraped_pages": [
                 {"url": f"https://site{i}.com", "content": f"Content block {i}" * 100}
                 for i in range(10)
             ],
@@ -271,9 +271,9 @@ class TestResumeVerification:
         assert meta.state_size_bytes > 1000
 
         loaded = mgr.load(cp_id)
-        assert len(loaded["sub_questions"]) == 20
+        assert len(loaded["subtopics"]) == 20
         assert len(loaded["search_results"]) == 50
-        assert len(loaded["scraped_content"]) == 10
+        assert len(loaded["scraped_pages"]) == 10
         assert len(loaded["error_log"]) == 3
 
     def test_metadata_tracks_step_progression(

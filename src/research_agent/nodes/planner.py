@@ -12,7 +12,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from research_agent.state import ResearchState, SubQuestion
+    from research_agent.state import ResearchState, Subtopic
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -25,7 +25,7 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 class PlannerOutput(BaseModel):
     """Structured output from the planning LLM call."""
 
-    sub_questions: list[SubQuestion] = Field(
+    subtopics: list[Subtopic] = Field(
         description="Ordered list of sub-questions to investigate.",
         min_length=1,
         max_length=10,
@@ -45,13 +45,13 @@ def plan_node(state: ResearchState) -> dict[str, Any]:
     """Decompose the research query into focused sub-questions.
 
     Uses structured LLM output to produce a validated list of
-    ``SubQuestion`` items, each with an ID and rationale.
+    ``Subtopic`` items, each with an ID and rationale.
 
     Args:
         state: Current research state containing the user query.
 
     Returns:
-        Partial state update with ``sub_questions``, ``step``, and
+        Partial state update with ``subtopics``, ``step``, and
         ``step_index``.
 
     Raises:

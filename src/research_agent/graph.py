@@ -55,7 +55,7 @@ def _should_continue_scrape(state: ResearchState) -> str:
     Returns ``"summarize"`` if we have scraped content, otherwise routes
     to ``END`` with a warning.
     """
-    scraped = state.get("scraped_content", [])
+    scraped = state.get("scraped_pages", [])
     if scraped:
         return "summarize"
 
@@ -70,18 +70,18 @@ def _all_subtopics_done(state: ResearchState) -> str:
     remain. If so, loops back to ``"search"`` for the next subtopic.
     Otherwise, routes to ``"synthesize"`` for final report generation.
     """
-    sub_questions = state.get("sub_questions", [])
+    subtopics = state.get("subtopics", [])
     current_idx = state.get("current_subtopic_index", 0)
 
-    if current_idx < len(sub_questions):
+    if current_idx < len(subtopics):
         logger.info(
             "next_subtopic",
             index=current_idx,
-            remaining=len(sub_questions) - current_idx,
+            remaining=len(subtopics) - current_idx,
         )
         return "search"
 
-    logger.info("all_subtopics_complete", total=len(sub_questions))
+    logger.info("all_subtopics_complete", total=len(subtopics))
     return "synthesize"
 
 

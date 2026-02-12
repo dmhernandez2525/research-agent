@@ -217,7 +217,7 @@ async def _tavily_search_with_retry(
 
 def _parse_results(
     raw_results: list[dict[str, Any]],
-    sub_question_id: int,
+    subtopic_id: int,
     query: str,
 ) -> list[SearchResult]:
     """Convert raw Tavily results to SearchResult models.
@@ -227,7 +227,7 @@ def _parse_results(
 
     Args:
         raw_results: Raw dicts from Tavily API.
-        sub_question_id: The sub-question these results belong to.
+        subtopic_id: The sub-question these results belong to.
         query: The query that produced these results.
 
     Returns:
@@ -240,7 +240,7 @@ def _parse_results(
             continue
         results.append(
             SearchResult(
-                sub_question_id=sub_question_id,
+                subtopic_id=subtopic_id,
                 query=query,
                 title=item.get("title", ""),
                 url=item.get("url", ""),
@@ -281,7 +281,7 @@ def _deduplicate_results(results: list[SearchResult]) -> list[SearchResult]:
 
 async def execute_search(
     query: str,
-    sub_question_id: int,
+    subtopic_id: int,
     max_results: int = 10,
     search_depth: str = "advanced",
 ) -> list[SearchResult]:
@@ -289,7 +289,7 @@ async def execute_search(
 
     Args:
         query: The search query string.
-        sub_question_id: ID of the originating sub-question.
+        subtopic_id: ID of the originating sub-question.
         max_results: Maximum number of results to return.
         search_depth: Tavily search depth ("basic" or "advanced").
 
@@ -301,7 +301,7 @@ async def execute_search(
         max_results=max_results,
         search_depth=search_depth,
     )
-    return _parse_results(raw, sub_question_id, query)
+    return _parse_results(raw, subtopic_id, query)
 
 
 # ---------------------------------------------------------------------------
@@ -316,27 +316,27 @@ async def search_node(state: ResearchState) -> dict[str, Any]:
     the sub-question as a search query with rate limiting and deduplication.
 
     Args:
-        state: Current research state with ``sub_questions`` populated.
+        state: Current research state with ``subtopics`` populated.
 
     Returns:
         Partial state update with ``search_results``, ``seen_urls``,
         ``step``, ``step_index``, and ``search_retry_count``.
     """
-    sub_questions = state.get("sub_questions", [])
+    subtopics = state.get("subtopics", [])
     current_idx = state.get("current_subtopic_index", 0)
     seen_urls = state.get("seen_urls", [])
 
-    if current_idx >= len(sub_questions):
+    if current_idx >= len(subtopics):
         logger.info("search_skip", reason="no more sub-questions")
         return {"search_results": [], "step": "search", "step_index": 1}
 
-    sub_q = sub_questions[current_idx]
+    sub_q = subtopics[current_idx]
     sub_q_id = sub_q.get("id", current_idx + 1) if isinstance(sub_q, dict) else sub_q.id
     question = sub_q.get("question", "") if isinstance(sub_q, dict) else sub_q.question
 
     logger.info(
         "search_start",
-        sub_question_id=sub_q_id,
+        subtopic_id=sub_q_id,
         question=question,
     )
 
@@ -348,7 +348,7 @@ async def search_node(state: ResearchState) -> dict[str, Any]:
             try:
                 return await execute_search(
                     query=q,
-                    sub_question_id=sub_q_id,
+                    subtopic_id=sub_q_id,
                 )
             except Exception as exc:
                 logger.warning("search_query_failed", query=q, error=str(exc))
@@ -385,7 +385,7 @@ async def search_node(state: ResearchState) -> dict[str, Any]:
     cross_dupes = len(unique) - len(new_results)
     logger.info(
         "search_complete",
-        sub_question_id=sub_q_id,
+        subtopic_id=sub_q_id,
         total_raw=len(all_results),
         batch_deduped=batch_dupes,
         cross_deduped=cross_dupes,

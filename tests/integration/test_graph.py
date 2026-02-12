@@ -102,11 +102,11 @@ class TestShouldContinueScrape:
     """Conditional routing after scrape node."""
 
     def test_routes_to_summarize_with_content(self) -> None:
-        state: ResearchState = {"scraped_content": [MagicMock()]}
+        state: ResearchState = {"scraped_pages": [MagicMock()]}
         assert _should_continue_scrape(state) == "summarize"
 
     def test_routes_to_end_without_content(self) -> None:
-        state: ResearchState = {"scraped_content": []}
+        state: ResearchState = {"scraped_pages": []}
         result = _should_continue_scrape(state)
         assert result == "__end__"
 
@@ -124,35 +124,35 @@ class TestAllSubtopicsDone:
 
     def test_routes_to_search_when_subtopics_remain(self) -> None:
         state: ResearchState = {
-            "sub_questions": [MagicMock(), MagicMock(), MagicMock()],
+            "subtopics": [MagicMock(), MagicMock(), MagicMock()],
             "current_subtopic_index": 1,
         }
         assert _all_subtopics_done(state) == "search"
 
     def test_routes_to_synthesize_when_all_done(self) -> None:
         state: ResearchState = {
-            "sub_questions": [MagicMock(), MagicMock()],
+            "subtopics": [MagicMock(), MagicMock()],
             "current_subtopic_index": 2,
         }
         assert _all_subtopics_done(state) == "synthesize"
 
     def test_routes_to_synthesize_when_index_exceeds(self) -> None:
         state: ResearchState = {
-            "sub_questions": [MagicMock()],
+            "subtopics": [MagicMock()],
             "current_subtopic_index": 5,
         }
         assert _all_subtopics_done(state) == "synthesize"
 
-    def test_empty_sub_questions_routes_to_synthesize(self) -> None:
+    def test_empty_subtopics_routes_to_synthesize(self) -> None:
         state: ResearchState = {
-            "sub_questions": [],
+            "subtopics": [],
             "current_subtopic_index": 0,
         }
         assert _all_subtopics_done(state) == "synthesize"
 
     def test_index_zero_with_subtopics_routes_to_search(self) -> None:
         state: ResearchState = {
-            "sub_questions": [MagicMock()],
+            "subtopics": [MagicMock()],
             "current_subtopic_index": 0,
         }
         assert _all_subtopics_done(state) == "search"

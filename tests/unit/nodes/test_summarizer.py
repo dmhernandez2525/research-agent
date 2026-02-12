@@ -13,7 +13,7 @@ from research_agent.nodes.summarizer import (
     _summarize_group,
     summarize_node,
 )
-from research_agent.state import ScrapedContent, Summary
+from research_agent.state import ScrapedPage, SubtopicSummary
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -21,28 +21,28 @@ from research_agent.state import ScrapedContent, Summary
 
 
 @pytest.fixture()
-def scraped_items() -> list[ScrapedContent]:
+def scraped_items() -> list[ScrapedPage]:
     """Multiple scraped content items across two sub-questions."""
     return [
-        ScrapedContent(
+        ScrapedPage(
             url="https://a.com/1",
-            sub_question_id=1,
+            subtopic_id=1,
             title="Article A",
             content="Content about topic A with many details and findings.",
             word_count=50,
             quality_score=0.8,
         ),
-        ScrapedContent(
+        ScrapedPage(
             url="https://b.com/2",
-            sub_question_id=1,
+            subtopic_id=1,
             title="Article B",
             content="More content about topic A from a different source.",
             word_count=40,
             quality_score=0.7,
         ),
-        ScrapedContent(
+        ScrapedPage(
             url="https://c.com/3",
-            sub_question_id=2,
+            subtopic_id=2,
             title="Article C",
             content="Content about topic B entirely.",
             word_count=30,
@@ -66,8 +66,8 @@ def mock_summarizer_result() -> SummarizerOutput:
 
 
 @pytest.fixture()
-def sample_sub_questions() -> list[dict]:
-    """Sub-questions as dicts (as stored in state)."""
+def sample_subtopics() -> list[dict]:
+    """Subtopics as dicts (as stored in state)."""
     return [
         {"id": 1, "question": "What is topic A?", "rationale": "Core question"},
         {"id": 2, "question": "What is topic B?", "rationale": "Supporting question"},
@@ -80,10 +80,10 @@ def sample_sub_questions() -> list[dict]:
 
 
 class TestGroupContentByQuestion:
-    """_group_content_by_question groups scraped content by sub_question_id."""
+    """_group_content_by_question groups scraped content by subtopic_id."""
 
-    def test_groups_by_sub_question_id(
-        self, scraped_items: list[ScrapedContent]
+    def test_groups_by_subtopic_id(
+        self, scraped_items: list[ScrapedPage]
     ) -> None:
         groups = _group_content_by_question(scraped_items)
         assert set(groups.keys()) == {1, 2}
@@ -96,18 +96,18 @@ class TestGroupContentByQuestion:
 
     def test_single_group(self) -> None:
         items = [
-            ScrapedContent(
-                url="https://a.com", sub_question_id=1, content="text", word_count=5
+            ScrapedPage(
+                url="https://a.com", subtopic_id=1, content="text", word_count=5
             ),
-            ScrapedContent(
-                url="https://b.com", sub_question_id=1, content="more", word_count=5
+            ScrapedPage(
+                url="https://b.com", subtopic_id=1, content="more", word_count=5
             ),
         ]
         groups = _group_content_by_question(items)
         assert list(groups.keys()) == [1]
         assert len(groups[1]) == 2
 
-    def test_preserves_item_order(self, scraped_items: list[ScrapedContent]) -> None:
+    def test_preserves_item_order(self, scraped_items: list[ScrapedPage]) -> None:
         groups = _group_content_by_question(scraped_items)
         assert groups[1][0].url == "https://a.com/1"
         assert groups[1][1].url == "https://b.com/2"
@@ -123,9 +123,9 @@ class TestBuildContentBlock:
 
     def test_single_item_format(self) -> None:
         items = [
-            ScrapedContent(
+            ScrapedPage(
                 url="https://example.com",
-                sub_question_id=1,
+                subtopic_id=1,
                 title="Test Article",
                 content="Article content here.",
                 word_count=3,
@@ -136,7 +136,7 @@ class TestBuildContentBlock:
         assert "Article content here." in result
 
     def test_multiple_items_separated_by_rule(
-        self, scraped_items: list[ScrapedContent]
+        self, scraped_items: list[ScrapedPage]
     ) -> None:
         result = _build_content_block(scraped_items[:2])
         assert "---" in result
@@ -149,9 +149,9 @@ class TestBuildContentBlock:
 
     def test_preserves_content(self) -> None:
         items = [
-            ScrapedContent(
+            ScrapedPage(
                 url="https://x.com",
-                sub_question_id=1,
+                subtopic_id=1,
                 title="X",
                 content="Specific data: 42% increase in Q3.",
                 word_count=7,
@@ -214,7 +214,7 @@ class TestSummarizeGroup:
     @pytest.mark.asyncio()
     async def test_returns_summary_model(
         self,
-        scraped_items: list[ScrapedContent],
+        scraped_items: list[ScrapedPage],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
         mock_response = self._make_mock_response(mock_summarizer_result)
@@ -233,8 +233,8 @@ class TestSummarizeGroup:
             }
             result = await _summarize_group(1, "What is topic A?", scraped_items[:2])
 
-        assert isinstance(result, Summary)
-        assert result.sub_question_id == 1
+        assert isinstance(result, SubtopicSummary)
+        assert result.subtopic_id == 1
         assert result.sub_question == "What is topic A?"
         assert result.summary == mock_summarizer_result.summary
         assert result.key_findings == mock_summarizer_result.key_findings
@@ -242,7 +242,7 @@ class TestSummarizeGroup:
     @pytest.mark.asyncio()
     async def test_extracts_source_urls(
         self,
-        scraped_items: list[ScrapedContent],
+        scraped_items: list[ScrapedPage],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
         mock_response = self._make_mock_response(mock_summarizer_result)
@@ -266,7 +266,7 @@ class TestSummarizeGroup:
     @pytest.mark.asyncio()
     async def test_passes_content_to_llm(
         self,
-        scraped_items: list[ScrapedContent],
+        scraped_items: list[ScrapedPage],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
         mock_response = self._make_mock_response(mock_summarizer_result)
@@ -294,7 +294,7 @@ class TestSummarizeGroup:
     @pytest.mark.asyncio()
     async def test_uses_smart_tier_model(
         self,
-        scraped_items: list[ScrapedContent],
+        scraped_items: list[ScrapedPage],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
         mock_response = self._make_mock_response(mock_summarizer_result)
@@ -328,18 +328,18 @@ class TestSummarizeNode:
     @pytest.mark.asyncio()
     async def test_returns_summary_for_current_subtopic(
         self,
-        scraped_items: list[ScrapedContent],
-        sample_sub_questions: list[dict],
+        scraped_items: list[ScrapedPage],
+        sample_subtopics: list[dict],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
         state = {
-            "scraped_content": scraped_items,
-            "sub_questions": sample_sub_questions,
+            "scraped_pages": scraped_items,
+            "subtopics": sample_subtopics,
             "current_subtopic_index": 0,
         }
 
-        mock_summary = Summary(
-            sub_question_id=1,
+        mock_summary = SubtopicSummary(
+            subtopic_id=1,
             sub_question="What is topic A?",
             summary="LLM summary.",
             source_urls=["https://a.com/1"],
@@ -353,23 +353,23 @@ class TestSummarizeNode:
         ):
             result = await summarize_node(state)
 
-        assert len(result["summaries"]) == 1
-        assert result["summaries"][0].sub_question_id == 1
+        assert len(result["subtopic_summaries"]) == 1
+        assert result["subtopic_summaries"][0].subtopic_id == 1
 
     @pytest.mark.asyncio()
     async def test_increments_subtopic_index(
         self,
-        scraped_items: list[ScrapedContent],
-        sample_sub_questions: list[dict],
+        scraped_items: list[ScrapedPage],
+        sample_subtopics: list[dict],
     ) -> None:
         state = {
-            "scraped_content": scraped_items,
-            "sub_questions": sample_sub_questions,
+            "scraped_pages": scraped_items,
+            "subtopics": sample_subtopics,
             "current_subtopic_index": 0,
         }
 
-        mock_summary = Summary(
-            sub_question_id=1,
+        mock_summary = SubtopicSummary(
+            subtopic_id=1,
             sub_question="Q",
             summary="S",
             key_findings=["F"],
@@ -385,56 +385,56 @@ class TestSummarizeNode:
         assert result["current_subtopic_index"] == 1
 
     @pytest.mark.asyncio()
-    async def test_empty_scraped_content_returns_empty(
+    async def test_empty_scraped_pages_returns_empty(
         self,
-        sample_sub_questions: list[dict],
+        sample_subtopics: list[dict],
     ) -> None:
         state = {
-            "scraped_content": [],
-            "sub_questions": sample_sub_questions,
+            "scraped_pages": [],
+            "subtopics": sample_subtopics,
             "current_subtopic_index": 0,
         }
         result = await summarize_node(state)
-        assert result["summaries"] == []
+        assert result["subtopic_summaries"] == []
         assert result["current_subtopic_index"] == 1
 
     @pytest.mark.asyncio()
-    async def test_no_sub_questions_returns_empty(self) -> None:
+    async def test_no_subtopics_returns_empty(self) -> None:
         state = {
-            "scraped_content": [],
-            "sub_questions": [],
+            "scraped_pages": [],
+            "subtopics": [],
             "current_subtopic_index": 0,
         }
         result = await summarize_node(state)
-        assert result["summaries"] == []
+        assert result["subtopic_summaries"] == []
 
     @pytest.mark.asyncio()
     async def test_index_out_of_range_returns_empty(
         self,
-        sample_sub_questions: list[dict],
+        sample_subtopics: list[dict],
     ) -> None:
         state = {
-            "scraped_content": [],
-            "sub_questions": sample_sub_questions,
+            "scraped_pages": [],
+            "subtopics": sample_subtopics,
             "current_subtopic_index": 10,
         }
         result = await summarize_node(state)
-        assert result["summaries"] == []
+        assert result["subtopic_summaries"] == []
 
     @pytest.mark.asyncio()
     async def test_sets_step_metadata(
         self,
-        scraped_items: list[ScrapedContent],
-        sample_sub_questions: list[dict],
+        scraped_items: list[ScrapedPage],
+        sample_subtopics: list[dict],
     ) -> None:
         state = {
-            "scraped_content": scraped_items,
-            "sub_questions": sample_sub_questions,
+            "scraped_pages": scraped_items,
+            "subtopics": sample_subtopics,
             "current_subtopic_index": 0,
         }
 
-        mock_summary = Summary(
-            sub_question_id=1,
+        mock_summary = SubtopicSummary(
+            subtopic_id=1,
             sub_question="Q",
             summary="S",
             key_findings=["F"],
@@ -453,12 +453,12 @@ class TestSummarizeNode:
     @pytest.mark.asyncio()
     async def test_handles_llm_failure_gracefully(
         self,
-        scraped_items: list[ScrapedContent],
-        sample_sub_questions: list[dict],
+        scraped_items: list[ScrapedPage],
+        sample_subtopics: list[dict],
     ) -> None:
         state = {
-            "scraped_content": scraped_items,
-            "sub_questions": sample_sub_questions,
+            "scraped_pages": scraped_items,
+            "subtopics": sample_subtopics,
             "current_subtopic_index": 0,
         }
 
@@ -469,24 +469,24 @@ class TestSummarizeNode:
         ):
             result = await summarize_node(state)
 
-        assert result["summaries"] == []
+        assert result["subtopic_summaries"] == []
         assert result["current_subtopic_index"] == 1
 
     @pytest.mark.asyncio()
     async def test_filters_content_for_current_subtopic_only(
         self,
-        scraped_items: list[ScrapedContent],
-        sample_sub_questions: list[dict],
+        scraped_items: list[ScrapedPage],
+        sample_subtopics: list[dict],
     ) -> None:
-        """Only content matching the current sub_question_id is passed to _summarize_group."""
+        """Only content matching the current subtopic_id is passed to _summarize_group."""
         state = {
-            "scraped_content": scraped_items,
-            "sub_questions": sample_sub_questions,
-            "current_subtopic_index": 1,  # sub_question_id=2
+            "scraped_pages": scraped_items,
+            "subtopics": sample_subtopics,
+            "current_subtopic_index": 1,  # subtopic_id=2
         }
 
-        mock_summary = Summary(
-            sub_question_id=2,
+        mock_summary = SubtopicSummary(
+            subtopic_id=2,
             sub_question="What is topic B?",
             summary="Summary B",
             key_findings=["Finding B"],
@@ -499,8 +499,8 @@ class TestSummarizeNode:
         ) as mock_fn:
             result = await summarize_node(state)
 
-        # Should only pass the 1 item with sub_question_id=2
+        # Should only pass the 1 item with subtopic_id=2
         call_args = mock_fn.call_args
-        assert call_args[0][0] == 2  # sub_question_id
+        assert call_args[0][0] == 2  # subtopic_id
         assert len(call_args[0][2]) == 1  # only 1 content item for sub_q 2
-        assert result["summaries"][0].sub_question_id == 2
+        assert result["subtopic_summaries"][0].subtopic_id == 2

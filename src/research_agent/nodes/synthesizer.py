@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from research_agent.state import Source
 
 if TYPE_CHECKING:
-    from research_agent.state import ResearchState, Summary
+    from research_agent.state import ResearchState, SubtopicSummary
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -70,7 +70,7 @@ def _load_prompt() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _build_citation_index(summaries: list[Summary]) -> dict[str, int]:
+def _build_citation_index(summaries: list[SubtopicSummary]) -> dict[str, int]:
     """Build a deduplicated citation index from summary source URLs.
 
     Assigns a 1-based global number to each unique URL across all summaries.
@@ -92,7 +92,7 @@ def _build_citation_index(summaries: list[Summary]) -> dict[str, int]:
 
 
 def _format_context_with_citations(
-    summaries: list[Summary],
+    summaries: list[SubtopicSummary],
     citation_index: dict[str, int],
 ) -> str:
     """Format summaries with numbered citation references.
@@ -116,7 +116,7 @@ def _format_context_with_citations(
         ]
         citation_str = " ".join(citations) if citations else ""
 
-        header = f"## Sub-question {summary.sub_question_id}: {summary.sub_question}"
+        header = f"## Sub-question {summary.subtopic_id}: {summary.sub_question}"
         findings = "\n".join(f"- {f}" for f in summary.key_findings)
 
         block = f"{header}\n\n{summary.summary}\n\n**Key Findings:**\n{findings}"
@@ -140,7 +140,7 @@ def _format_context_with_citations(
 # ---------------------------------------------------------------------------
 
 
-def _build_synthesis_context(summaries: list[Summary]) -> str:
+def _build_synthesis_context(summaries: list[SubtopicSummary]) -> str:
     """Concatenate per-subtask summaries into a single context block.
 
     Args:
@@ -151,7 +151,7 @@ def _build_synthesis_context(summaries: list[Summary]) -> str:
     """
     parts: list[str] = []
     for summary in summaries:
-        header = f"## Sub-question {summary.sub_question_id}: {summary.sub_question}"
+        header = f"## Sub-question {summary.subtopic_id}: {summary.sub_question}"
         sources_str = ", ".join(summary.source_urls) if summary.source_urls else "none"
         parts.append(f"{header}\n\n{summary.summary}\n\nSources: {sources_str}")
     return "\n\n---\n\n".join(parts)
@@ -293,13 +293,13 @@ async def synthesize_node(state: ResearchState) -> dict[str, Any]:
     citations, and appends a Sources section if the LLM omitted one.
 
     Args:
-        state: Current research state with ``summaries`` populated.
+        state: Current research state with ``subtopic_summaries`` populated.
 
     Returns:
         Partial state update with ``final_report``, ``sources``,
         ``step``, and ``step_index``.
     """
-    summaries = state.get("summaries", [])
+    summaries = state.get("subtopic_summaries", [])
     query = state.get("query", "")
     logger.info("synthesize_start", num_summaries=len(summaries), query=query)
 

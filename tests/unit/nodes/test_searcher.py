@@ -80,7 +80,7 @@ class TestParseResults:
     """Converting raw Tavily dicts to SearchResult models."""
 
     def test_parses_valid_results(self, tavily_response: list[dict[str, Any]]) -> None:
-        results = _parse_results(tavily_response, sub_question_id=1, query="RAG")
+        results = _parse_results(tavily_response, subtopic_id=1, query="RAG")
         # 3 raw results, but one is below threshold
         assert len(results) == 2
         assert all(isinstance(r, SearchResult) for r in results)
@@ -88,38 +88,38 @@ class TestParseResults:
     def test_filters_below_min_relevance(
         self, tavily_response: list[dict[str, Any]]
     ) -> None:
-        results = _parse_results(tavily_response, sub_question_id=1, query="RAG")
+        results = _parse_results(tavily_response, subtopic_id=1, query="RAG")
         scores = [r.score for r in results]
         assert all(s >= _MIN_RELEVANCE_SCORE for s in scores)
 
     def test_sorts_by_score_descending(
         self, tavily_response: list[dict[str, Any]]
     ) -> None:
-        results = _parse_results(tavily_response, sub_question_id=1, query="RAG")
+        results = _parse_results(tavily_response, subtopic_id=1, query="RAG")
         scores = [r.score for r in results]
         assert scores == sorted(scores, reverse=True)
 
-    def test_sets_sub_question_id(self, tavily_response: list[dict[str, Any]]) -> None:
-        results = _parse_results(tavily_response, sub_question_id=42, query="test")
+    def test_sets_subtopic_id(self, tavily_response: list[dict[str, Any]]) -> None:
+        results = _parse_results(tavily_response, subtopic_id=42, query="test")
         for r in results:
-            assert r.sub_question_id == 42
+            assert r.subtopic_id == 42
 
     def test_sets_query(self, tavily_response: list[dict[str, Any]]) -> None:
-        results = _parse_results(tavily_response, sub_question_id=1, query="my query")
+        results = _parse_results(tavily_response, subtopic_id=1, query="my query")
         for r in results:
             assert r.query == "my query"
 
     def test_empty_results_returns_empty(self) -> None:
-        assert _parse_results([], sub_question_id=1, query="q") == []
+        assert _parse_results([], subtopic_id=1, query="q") == []
 
     def test_missing_score_defaults_to_zero_and_filtered(self) -> None:
         raw = [{"url": "https://a.com", "title": "T", "content": "S"}]
-        results = _parse_results(raw, sub_question_id=1, query="q")
+        results = _parse_results(raw, subtopic_id=1, query="q")
         assert len(results) == 0  # 0.0 < 0.3 threshold
 
     def test_missing_fields_use_defaults(self) -> None:
         raw = [{"url": "https://a.com", "score": 0.8}]
-        results = _parse_results(raw, sub_question_id=1, query="q")
+        results = _parse_results(raw, subtopic_id=1, query="q")
         assert len(results) == 1
         assert results[0].title == ""
         assert results[0].snippet == ""
@@ -133,9 +133,9 @@ class TestDeduplicateResults:
 
     def test_removes_duplicates(self) -> None:
         results = [
-            SearchResult(sub_question_id=1, query="q", url="https://a.com", score=0.8),
+            SearchResult(subtopic_id=1, query="q", url="https://a.com", score=0.8),
             SearchResult(
-                sub_question_id=1,
+                subtopic_id=1,
                 query="q",
                 url="https://a.com",
                 title="dup",
@@ -148,8 +148,8 @@ class TestDeduplicateResults:
 
     def test_preserves_unique(self) -> None:
         results = [
-            SearchResult(sub_question_id=1, query="q", url="https://a.com", score=0.8),
-            SearchResult(sub_question_id=1, query="q", url="https://b.com", score=0.7),
+            SearchResult(subtopic_id=1, query="q", url="https://a.com", score=0.8),
+            SearchResult(subtopic_id=1, query="q", url="https://b.com", score=0.7),
         ]
         unique = _deduplicate_results(results)
         assert len(unique) == 2
@@ -159,9 +159,9 @@ class TestDeduplicateResults:
 
     def test_preserves_order(self) -> None:
         results = [
-            SearchResult(sub_question_id=1, query="q", url="https://c.com", score=0.5),
-            SearchResult(sub_question_id=1, query="q", url="https://a.com", score=0.9),
-            SearchResult(sub_question_id=1, query="q", url="https://b.com", score=0.7),
+            SearchResult(subtopic_id=1, query="q", url="https://c.com", score=0.5),
+            SearchResult(subtopic_id=1, query="q", url="https://a.com", score=0.9),
+            SearchResult(subtopic_id=1, query="q", url="https://b.com", score=0.7),
         ]
         unique = _deduplicate_results(results)
         assert [r.url for r in unique] == [
@@ -173,10 +173,10 @@ class TestDeduplicateResults:
     def test_deduplicates_with_trailing_slash_difference(self) -> None:
         results = [
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/page", score=0.9
+                subtopic_id=1, query="q", url="https://a.com/page", score=0.9
             ),
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/page/", score=0.7
+                subtopic_id=1, query="q", url="https://a.com/page/", score=0.7
             ),
         ]
         unique = _deduplicate_results(results)
@@ -185,10 +185,10 @@ class TestDeduplicateResults:
     def test_deduplicates_with_tracking_param_difference(self) -> None:
         results = [
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/page", score=0.9
+                subtopic_id=1, query="q", url="https://a.com/page", score=0.9
             ),
             SearchResult(
-                sub_question_id=1,
+                subtopic_id=1,
                 query="q",
                 url="https://a.com/page?utm_source=google",
                 score=0.7,
@@ -200,10 +200,10 @@ class TestDeduplicateResults:
     def test_deduplicates_with_fragment_difference(self) -> None:
         results = [
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/page", score=0.9
+                subtopic_id=1, query="q", url="https://a.com/page", score=0.9
             ),
             SearchResult(
-                sub_question_id=1,
+                subtopic_id=1,
                 query="q",
                 url="https://a.com/page#section",
                 score=0.7,
@@ -215,10 +215,10 @@ class TestDeduplicateResults:
     def test_deduplicates_with_case_difference(self) -> None:
         results = [
             SearchResult(
-                sub_question_id=1, query="q", url="https://A.COM/page", score=0.9
+                subtopic_id=1, query="q", url="https://A.COM/page", score=0.9
             ),
             SearchResult(
-                sub_question_id=1, query="q", url="https://a.com/page", score=0.7
+                subtopic_id=1, query="q", url="https://a.com/page", score=0.7
             ),
         ]
         unique = _deduplicate_results(results)
@@ -471,10 +471,10 @@ class TestExecuteSearch:
             new_callable=AsyncMock,
             return_value=tavily_response,
         ):
-            results = await execute_search(query="RAG", sub_question_id=1)
+            results = await execute_search(query="RAG", subtopic_id=1)
 
         assert len(results) == 2
-        assert all(r.sub_question_id == 1 for r in results)
+        assert all(r.subtopic_id == 1 for r in results)
 
     @pytest.mark.asyncio()
     async def test_passes_max_results(self) -> None:
@@ -483,7 +483,7 @@ class TestExecuteSearch:
             "research_agent.nodes.searcher._tavily_search_with_retry",
             mock,
         ):
-            await execute_search(query="test", sub_question_id=1, max_results=5)
+            await execute_search(query="test", subtopic_id=1, max_results=5)
 
         mock.assert_called_once_with(
             query="test", max_results=5, search_depth="advanced"
@@ -498,7 +498,7 @@ class TestExecuteSearch:
         ):
             await execute_search(
                 query="test",
-                sub_question_id=1,
+                subtopic_id=1,
                 search_depth="basic",
             )
 
@@ -513,9 +513,9 @@ class TestSearchNode:
     """The search_node graph function (with mocked query expansion)."""
 
     @pytest.mark.asyncio()
-    async def test_returns_empty_when_no_sub_questions(self) -> None:
+    async def test_returns_empty_when_no_subtopics(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [],
+            "subtopics": [],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -525,7 +525,7 @@ class TestSearchNode:
     @pytest.mark.asyncio()
     async def test_returns_empty_when_index_past_end(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 5,
             "seen_urls": [],
         }
@@ -537,7 +537,7 @@ class TestSearchNode:
         self, tavily_response: list[dict[str, Any]]
     ) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [
+            "subtopics": [
                 {"id": 1, "question": "What is RAG?"},
                 {"id": 2, "question": "How does it work?"},
             ],
@@ -554,13 +554,13 @@ class TestSearchNode:
         # Should have called tavily for each of the 3 expanded queries
         assert tavily_mock.call_count == 3
         assert len(result["search_results"]) > 0
-        assert all(r.sub_question_id == 1 for r in result["search_results"])
+        assert all(r.subtopic_id == 1 for r in result["search_results"])
 
     @pytest.mark.asyncio()
     async def test_deduplicates_across_variations(self) -> None:
         """Results from different query variations with same URL get deduped."""
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -584,7 +584,7 @@ class TestSearchNode:
         self, tavily_response: list[dict[str, Any]]
     ) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 0,
             "seen_urls": ["https://example.com/rag-intro"],
         }
@@ -602,7 +602,7 @@ class TestSearchNode:
     async def test_filters_seen_urls_with_normalization(self) -> None:
         """Cross-subtopic dedup treats normalized URLs as equal."""
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 0,
             # Previously seen URL with trailing slash
             "seen_urls": ["https://example.com/page/"],
@@ -638,7 +638,7 @@ class TestSearchNode:
     async def test_seen_urls_are_normalized(self) -> None:
         """New seen_urls in output are normalized for future comparisons."""
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -665,7 +665,7 @@ class TestSearchNode:
         self, tavily_response: list[dict[str, Any]]
     ) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -683,7 +683,7 @@ class TestSearchNode:
     @pytest.mark.asyncio()
     async def test_handles_search_failure_gracefully(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -701,7 +701,7 @@ class TestSearchNode:
         self, tavily_response: list[dict[str, Any]]
     ) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "subtopics": [{"id": 1, "question": "Q1"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -716,9 +716,9 @@ class TestSearchNode:
         assert result["step_index"] == 1
 
     @pytest.mark.asyncio()
-    async def test_works_with_dict_sub_questions(self) -> None:
+    async def test_works_with_dict_subtopics(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 3, "question": "Dict format"}],
+            "subtopics": [{"id": 3, "question": "Dict format"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -732,7 +732,7 @@ class TestSearchNode:
         ):
             result = await search_node(state)
 
-        assert result["search_results"][0].sub_question_id == 3
+        assert result["search_results"][0].subtopic_id == 3
 
 
 # ---- search_node expansion fallback ------------------------------------------
@@ -744,7 +744,7 @@ class TestSearchNodeExpansionFallback:
     @pytest.mark.asyncio()
     async def test_falls_back_to_original_on_expansion_failure(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "What is RAG?"}],
+            "subtopics": [{"id": 1, "question": "What is RAG?"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -772,7 +772,7 @@ class TestSearchNodeExpansionFallback:
     @pytest.mark.asyncio()
     async def test_fallback_uses_original_question_text(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "specific question text"}],
+            "subtopics": [{"id": 1, "question": "specific question text"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -797,7 +797,7 @@ class TestSearchNodeExpansionFallback:
     @pytest.mark.asyncio()
     async def test_expansion_failure_still_returns_valid_state(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q"}],
+            "subtopics": [{"id": 1, "question": "Q"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -823,7 +823,7 @@ class TestSearchNodeExpansionFallback:
     @pytest.mark.asyncio()
     async def test_both_expansion_and_search_fail_gracefully(self) -> None:
         state: dict[str, Any] = {
-            "sub_questions": [{"id": 1, "question": "Q"}],
+            "subtopics": [{"id": 1, "question": "Q"}],
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
@@ -880,4 +880,4 @@ class TestRetryBehavior:
             ),
             pytest.raises(ValueError, match="bad query"),
         ):
-            await execute_search(query="test", sub_question_id=1)
+            await execute_search(query="test", subtopic_id=1)

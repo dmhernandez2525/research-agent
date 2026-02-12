@@ -11,27 +11,27 @@ from pydantic import ValidationError
 from research_agent.state import (
     ErrorEntry,
     ResearchState,
-    ScrapedContent,
+    ScrapedPage,
     SearchResult,
     Source,
-    SubQuestion,
-    Summary,
+    Subtopic,
+    SubtopicSummary,
 )
 
-# ---- SubQuestion -------------------------------------------------------------
+# ---- Subtopic ----------------------------------------------------------------
 
 
-class TestSubQuestion:
-    """SubQuestion model construction and validation."""
+class TestSubtopic:
+    """Subtopic model construction and validation."""
 
     def test_valid_construction(self) -> None:
-        sq = SubQuestion(id=1, question="What is RAG?")
+        sq = Subtopic(id=1, question="What is RAG?")
         assert sq.id == 1
         assert sq.question == "What is RAG?"
         assert sq.rationale == ""
 
     def test_with_rationale(self) -> None:
-        sq = SubQuestion(id=2, question="How?", rationale="Key context")
+        sq = Subtopic(id=2, question="How?", rationale="Key context")
         assert sq.rationale == "Key context"
 
 
@@ -42,40 +42,40 @@ class TestSearchResult:
     """SearchResult model construction and validation."""
 
     def test_valid_construction(self) -> None:
-        sr = SearchResult(sub_question_id=1, query="RAG", url="https://example.com")
-        assert sr.sub_question_id == 1
+        sr = SearchResult(subtopic_id=1, query="RAG", url="https://example.com")
+        assert sr.subtopic_id == 1
         assert sr.url == "https://example.com"
         assert sr.score == 0.0
 
     def test_score_bounds(self) -> None:
-        sr = SearchResult(sub_question_id=1, query="q", url="https://a.com", score=0.95)
+        sr = SearchResult(subtopic_id=1, query="q", url="https://a.com", score=0.95)
         assert sr.score == 0.95
 
     def test_score_above_1_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            SearchResult(sub_question_id=1, query="q", url="https://a.com", score=1.5)
+            SearchResult(subtopic_id=1, query="q", url="https://a.com", score=1.5)
 
     def test_negative_score_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            SearchResult(sub_question_id=1, query="q", url="https://a.com", score=-0.1)
+            SearchResult(subtopic_id=1, query="q", url="https://a.com", score=-0.1)
 
 
-# ---- ScrapedContent ----------------------------------------------------------
+# ---- ScrapedPage -------------------------------------------------------------
 
 
-class TestScrapedContent:
-    """ScrapedContent model construction and validation."""
+class TestScrapedPage:
+    """ScrapedPage model construction and validation."""
 
     def test_valid_construction(self) -> None:
-        sc = ScrapedContent(url="https://example.com", sub_question_id=1)
+        sc = ScrapedPage(url="https://example.com", subtopic_id=1)
         assert sc.content == ""
         assert sc.word_count == 0
         assert sc.quality_score == 0.0
 
     def test_with_content(self) -> None:
-        sc = ScrapedContent(
+        sc = ScrapedPage(
             url="https://example.com",
-            sub_question_id=1,
+            subtopic_id=1,
             content="Some text",
             word_count=2,
             quality_score=0.8,
@@ -85,30 +85,30 @@ class TestScrapedContent:
 
     def test_negative_word_count_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            ScrapedContent(url="https://example.com", sub_question_id=1, word_count=-1)
+            ScrapedPage(url="https://example.com", subtopic_id=1, word_count=-1)
 
     def test_quality_score_above_1_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            ScrapedContent(
-                url="https://example.com", sub_question_id=1, quality_score=1.5
+            ScrapedPage(
+                url="https://example.com", subtopic_id=1, quality_score=1.5
             )
 
 
-# ---- Summary -----------------------------------------------------------------
+# ---- SubtopicSummary ---------------------------------------------------------
 
 
-class TestSummary:
-    """Summary model construction."""
+class TestSubtopicSummary:
+    """SubtopicSummary model construction."""
 
     def test_valid_construction(self) -> None:
-        s = Summary(sub_question_id=1, summary="Key findings here.")
+        s = SubtopicSummary(subtopic_id=1, summary="Key findings here.")
         assert s.summary == "Key findings here."
         assert s.source_urls == []
         assert s.key_findings == []
 
     def test_with_sources_and_findings(self) -> None:
-        s = Summary(
-            sub_question_id=1,
+        s = SubtopicSummary(
+            subtopic_id=1,
             summary="text",
             source_urls=["https://a.com"],
             key_findings=["Finding 1"],
@@ -175,14 +175,14 @@ class TestResearchState:
         assert hasattr(sr_hint, "__metadata__")
         assert sr_hint.__metadata__[0] is operator.add
 
-    def test_scraped_content_has_add_reducer(self) -> None:
+    def test_scraped_pages_has_add_reducer(self) -> None:
         hints = get_type_hints(ResearchState, include_extras=True)
-        sc_hint = hints["scraped_content"]
+        sc_hint = hints["scraped_pages"]
         assert sc_hint.__metadata__[0] is operator.add
 
-    def test_summaries_has_add_reducer(self) -> None:
+    def test_subtopic_summaries_has_add_reducer(self) -> None:
         hints = get_type_hints(ResearchState, include_extras=True)
-        s_hint = hints["summaries"]
+        s_hint = hints["subtopic_summaries"]
         assert s_hint.__metadata__[0] is operator.add
 
     def test_error_log_has_add_reducer(self) -> None:
