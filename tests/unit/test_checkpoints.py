@@ -13,6 +13,7 @@ from research_agent.checkpoints import (
     CheckpointError,
     CheckpointManager,
     CheckpointMetadata,
+    checkpoint_id_for_step,
     generate_run_id,
 )
 
@@ -235,3 +236,30 @@ class TestRotation:
             time.sleep(0.02)
         remaining = mgr.list_checkpoints()
         assert len(remaining) >= 2
+
+
+# ---- Step-based naming -------------------------------------------------------
+
+
+class TestCheckpointIdForStep:
+    """checkpoint_id_for_step formats step-based checkpoint IDs."""
+
+    def test_zero_step(self) -> None:
+        assert checkpoint_id_for_step(0) == "checkpoint_0000"
+
+    def test_small_step(self) -> None:
+        assert checkpoint_id_for_step(3) == "checkpoint_0003"
+
+    def test_large_step(self) -> None:
+        assert checkpoint_id_for_step(999) == "checkpoint_0999"
+
+    def test_lexicographic_ordering(self) -> None:
+        ids = [checkpoint_id_for_step(i) for i in range(10)]
+        assert ids == sorted(ids)
+
+    def test_integration_with_save(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path)
+        cp_id = checkpoint_id_for_step(5)
+        mgr.save(cp_id, {"step": 5})
+        loaded = mgr.load(cp_id)
+        assert loaded["step"] == 5
