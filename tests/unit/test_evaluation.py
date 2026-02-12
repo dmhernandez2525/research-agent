@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 import pytest
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from research_agent.evaluation import (
     _DIMENSION_DESCRIPTIONS,
@@ -578,6 +582,158 @@ class TestFormatScorecard:
         result.recommendations = []
         card = evaluator.format_scorecard(result)
         assert "**Recommendations:**" not in card
+
+    def test_pass_indicator(self) -> None:
+        evaluator = ReportEvaluator()
+        result = self._make_result()
+        result.overall_score = 4.0
+        card = evaluator.format_scorecard(result)
+        assert "PASS" in card
+        assert "3.5" in card  # threshold shown
+
+    def test_fail_indicator(self) -> None:
+        evaluator = ReportEvaluator()
+        result = self._make_result()
+        result.overall_score = 2.0
+        card = evaluator.format_scorecard(result)
+        assert "FAIL" in card
+
+    def test_custom_threshold(self) -> None:
+        evaluator = ReportEvaluator()
+        result = self._make_result()
+        result.overall_score = 4.0
+        card = evaluator.format_scorecard(result, threshold=4.5)
+        assert "FAIL" in card
+        assert "4.5" in card
+
+    def test_at_threshold_passes(self) -> None:
+        evaluator = ReportEvaluator()
+        result = self._make_result()
+        result.overall_score = 3.5
+        card = evaluator.format_scorecard(result, threshold=3.5)
+        assert "PASS" in card
+
+
+# ---------------------------------------------------------------------------
+# ReportEvaluator - format_scorecard_rich
+# ---------------------------------------------------------------------------
+
+
+class TestFormatScorecardRich:
+    """format_scorecard_rich produces terminal-formatted output."""
+
+    def _make_result(self) -> EvaluationResult:
+        dims = [
+            DimensionScore(
+                dimension=name, score=4.0, weight=weight, reasoning="Good."
+            )
+            for name, weight in EVALUATION_DIMENSIONS
+        ]
+        return EvaluationResult(
+            query=_SAMPLE_QUERY,
+            dimensions=dims,
+            overall_score=4.0,
+            overall_reasoning="Solid report.",
+            recommendations=["Add more sources."],
+        )
+
+    def test_contains_header(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        assert "EVALUATION SCORECARD" in output
+
+    def test_contains_query(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        assert _SAMPLE_QUERY in output
+
+    def test_contains_score(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        assert "4.0/5.0" in output
+
+    def test_pass_marker(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        assert "[PASS]" in output
+
+    def test_fail_marker(self) -> None:
+        evaluator = ReportEvaluator()
+        result = self._make_result()
+        result.overall_score = 2.0
+        output = evaluator.format_scorecard_rich(result)
+        assert "[FAIL]" in output
+
+    def test_contains_all_dimensions(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        for name, _ in EVALUATION_DIMENSIONS:
+            assert name in output
+
+    def test_contains_threshold(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        assert "3.5/5.0" in output
+
+    def test_contains_assessment(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        assert "Solid report." in output
+
+    def test_contains_recommendations(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result())
+        assert "Add more sources." in output
+
+    def test_no_assessment_when_empty(self) -> None:
+        evaluator = ReportEvaluator()
+        result = self._make_result()
+        result.overall_reasoning = ""
+        output = evaluator.format_scorecard_rich(result)
+        assert "Assessment:" not in output
+
+    def test_custom_threshold(self) -> None:
+        evaluator = ReportEvaluator()
+        output = evaluator.format_scorecard_rich(self._make_result(), threshold=4.5)
+        assert "4.5/5.0" in output
+        assert "[FAIL]" in output
+
+
+# ---------------------------------------------------------------------------
+# ReportEvaluator - save_scorecard
+# ---------------------------------------------------------------------------
+
+
+class TestSaveScorecard:
+    """save_scorecard writes scorecard to disk."""
+
+    def test_saves_file(self, tmp_path: Path) -> None:
+        report_path = tmp_path / "report.md"
+        report_path.write_text("Report content.")
+
+        scorecard = "# Scorecard\nContent here."
+        result_path = ReportEvaluator.save_scorecard(scorecard, report_path)
+
+        assert result_path.exists()
+        assert result_path.name == "report.scorecard.md"
+        assert result_path.read_text() == scorecard
+
+    def test_scorecard_suffix(self, tmp_path: Path) -> None:
+        report_path = tmp_path / "my-report_20250101.md"
+        report_path.write_text("Report.")
+
+        result_path = ReportEvaluator.save_scorecard("content", report_path)
+        assert result_path.suffix == ".md"
+        assert ".scorecard" in result_path.name
+
+    def test_overwrites_existing(self, tmp_path: Path) -> None:
+        report_path = tmp_path / "report.md"
+        report_path.write_text("Report.")
+
+        ReportEvaluator.save_scorecard("first version", report_path)
+        result_path = ReportEvaluator.save_scorecard("second version", report_path)
+
+        assert result_path.read_text() == "second version"
 
 
 # ---------------------------------------------------------------------------

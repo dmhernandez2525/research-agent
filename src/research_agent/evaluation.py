@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+from pathlib import Path
 from typing import Any, Protocol
 
 import structlog
@@ -372,19 +373,29 @@ class ReportEvaluator:
             return 0.0
         return sum(d.weighted_score for d in dimensions)
 
-    def format_scorecard(self, result: EvaluationResult) -> str:
-        """Format an evaluation result as a human-readable scorecard.
+    def format_scorecard(
+        self,
+        result: EvaluationResult,
+        threshold: float = QUALITY_THRESHOLD,
+    ) -> str:
+        """Format an evaluation result as a human-readable Markdown scorecard.
+
+        Includes a pass/fail indicator with the quality threshold displayed.
 
         Args:
             result: The evaluation result.
+            threshold: Quality threshold for pass/fail (default QUALITY_THRESHOLD).
 
         Returns:
             Formatted Markdown scorecard string.
         """
+        passed = result.overall_score >= threshold
+        status = "PASS" if passed else "FAIL"
         lines: list[str] = [
             "# Evaluation Scorecard",
             f"**Query:** {result.query}",
             f"**Overall Score:** {result.overall_score:.1f}/5.0",
+            f"**Status:** {status} (threshold: {threshold:.1f})",
             "",
             "| Dimension | Score | Weight | Weighted |",
             "|-----------|-------|--------|----------|",
@@ -403,6 +414,86 @@ class ReportEvaluator:
             for rec in result.recommendations:
                 lines.append(f"- {rec}")
         return "\n".join(lines)
+
+    def format_scorecard_rich(
+        self,
+        result: EvaluationResult,
+        threshold: float = QUALITY_THRESHOLD,
+    ) -> str:
+        """Format an evaluation result as a rich-formatted terminal string.
+
+        Uses ANSI formatting for terminal display with color-coded
+        pass/fail indicators and dimension scores.
+
+        Args:
+            result: The evaluation result.
+            threshold: Quality threshold for pass/fail indicator.
+
+        Returns:
+            Plain-text scorecard with alignment for terminal display.
+        """
+        passed = result.overall_score >= threshold
+        status_marker = "[PASS]" if passed else "[FAIL]"
+
+        lines: list[str] = [
+            "",
+            "=" * 56,
+            "  EVALUATION SCORECARD",
+            "=" * 56,
+            f"  Query:    {result.query}",
+            f"  Score:    {result.overall_score:.1f}/5.0  {status_marker}",
+            f"  Threshold: {threshold:.1f}/5.0",
+            "-" * 56,
+        ]
+
+        # Dimension table
+        header = f"  {'Dimension':<20} {'Score':>5} {'Weight':>7} {'Weighted':>8}"
+        lines.append(header)
+        lines.append("  " + "-" * 42)
+
+        for dim in result.dimensions:
+            row = (
+                f"  {dim.dimension:<20} {dim.score:>5.1f} "
+                f"{dim.weight:>6.0%} {dim.weighted_score:>8.2f}"
+            )
+            lines.append(row)
+
+        lines.append("-" * 56)
+
+        if result.overall_reasoning:
+            lines.append(f"  Assessment: {result.overall_reasoning}")
+
+        if result.recommendations:
+            lines.append("  Recommendations:")
+            for rec in result.recommendations:
+                lines.append(f"    - {rec}")
+
+        lines.append("=" * 56)
+        lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def save_scorecard(
+        scorecard: str,
+        report_path: Path | str,
+    ) -> Path:
+        """Save a scorecard as a Markdown file alongside the report.
+
+        Creates a file with the same name as the report but with a
+        ``.scorecard.md`` suffix.
+
+        Args:
+            scorecard: The formatted Markdown scorecard content.
+            report_path: Path to the report file.
+
+        Returns:
+            Path to the saved scorecard file.
+        """
+        rpath = Path(report_path)
+        scorecard_path = rpath.with_suffix(".scorecard.md")
+        scorecard_path.write_text(scorecard, encoding="utf-8")
+        logger.info("scorecard_saved", path=str(scorecard_path))
+        return scorecard_path
 
 
 # ---------------------------------------------------------------------------
