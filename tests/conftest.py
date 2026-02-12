@@ -13,20 +13,33 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+CASSETTE_DIR = Path(__file__).parent / "cassettes"
+
+# Headers that must be stripped from cassette recordings.
+FILTERED_HEADERS = [
+    "authorization",
+    "x-api-key",
+    "api-key",
+    "openai-api-key",
+    "anthropic-api-key",
+]
+
+
 @pytest.fixture(scope="session")
 def vcr_config() -> dict[str, Any]:
-    """Return VCR.py configuration that filters sensitive headers."""
+    """Return VCR.py configuration that filters sensitive headers.
+
+    Uses ``record_mode="none"`` in CI (replay only) and can be
+    overridden locally with ``VCR_RECORD_MODE=new_episodes``.
+    """
+    import os
+
+    record_mode = os.environ.get("VCR_RECORD_MODE", "none")
+
     return {
-        "cassette_library_dir": str(
-            Path(__file__).parent / "cassettes",
-        ),
-        "filter_headers": [
-            "authorization",
-            "x-api-key",
-            "api-key",
-            "openai-api-key",
-        ],
-        "record_mode": "none",  # never record in CI; use existing cassettes
+        "cassette_library_dir": str(CASSETTE_DIR),
+        "filter_headers": FILTERED_HEADERS,
+        "record_mode": record_mode,
         "decode_compressed_response": True,
     }
 
