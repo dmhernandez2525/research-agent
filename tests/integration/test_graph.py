@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unittest.mock
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -13,9 +14,12 @@ from research_agent.graph import (
     _should_continue_scrape,
     _should_continue_search,
     build_graph,
+    compile_graph,
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from research_agent.state import ResearchState
 
 pytestmark = pytest.mark.integration
@@ -160,3 +164,97 @@ class TestAllSubtopicsDone:
     def test_empty_state_routes_to_synthesize(self) -> None:
         state: ResearchState = {}
         assert _all_subtopics_done(state) == "synthesize"
+
+
+# ---- compile_graph -----------------------------------------------------------
+
+
+class TestCompileGraph:
+    """Verify compile_graph compiles the graph with/without checkpointing."""
+
+    @staticmethod
+    def _sqlite_module_patches():
+        """Context manager that patches the langgraph.checkpoint.sqlite.aio module.
+
+        Returns a tuple of (context_manager, mock_saver) where mock_saver
+        is the mock for AsyncSqliteSaver.
+        """
+        import sys
+
+        mock_aio_module = MagicMock()
+        mock_saver = MagicMock()
+        mock_aio_module.AsyncSqliteSaver = mock_saver
+
+        modules_patch = {
+            "langgraph.checkpoint.sqlite": MagicMock(),
+            "langgraph.checkpoint.sqlite.aio": mock_aio_module,
+        }
+        return unittest.mock.patch.dict(sys.modules, modules_patch), mock_saver
+
+    def test_compile_without_checkpoints(self) -> None:
+        """When checkpoints are disabled, compile_graph returns a compiled graph
+        without creating a checkpointer."""
+        settings = MagicMock()
+        settings.checkpoints.enabled = False
+
+        ctx, mock_saver = self._sqlite_module_patches()
+        with ctx, unittest.mock.patch(
+            "research_agent.graph.build_graph"
+        ) as mock_build:
+            mock_graph = MagicMock()
+            mock_build.return_value = mock_graph
+            compiled = compile_graph(settings)
+
+        assert compiled is not None
+        mock_saver.from_conn_string.assert_not_called()
+        mock_graph.compile.assert_called_once_with(checkpointer=None)
+
+    def test_compile_with_checkpoints_creates_db(self, tmp_path: Path) -> None:
+        """When checkpoints are enabled and a checkpoint_db path is provided,
+        the parent directory is created and AsyncSqliteSaver is initialized."""
+        settings = MagicMock()
+        settings.checkpoints.enabled = True
+
+        db_path = tmp_path / "sub" / "langgraph.db"
+
+        ctx, mock_saver = self._sqlite_module_patches()
+        mock_checkpointer = MagicMock()
+        mock_saver.from_conn_string.return_value = mock_checkpointer
+
+        with ctx, unittest.mock.patch(
+            "research_agent.graph.build_graph"
+        ) as mock_build:
+            mock_graph = MagicMock()
+            mock_build.return_value = mock_graph
+            compiled = compile_graph(settings, checkpoint_db=db_path)
+
+        assert compiled is not None
+        assert db_path.parent.exists()
+        mock_saver.from_conn_string.assert_called_once_with(str(db_path))
+        mock_graph.compile.assert_called_once_with(checkpointer=mock_checkpointer)
+
+    def test_compile_with_checkpoints_uses_default_db_path(
+        self, tmp_path: Path
+    ) -> None:
+        """When checkpoints are enabled and checkpoint_db is None, the default
+        path from settings.checkpoints.directory / 'langgraph.db' is used."""
+        settings = MagicMock()
+        settings.checkpoints.enabled = True
+        settings.checkpoints.directory = tmp_path
+
+        expected_db = tmp_path / "langgraph.db"
+
+        ctx, mock_saver = self._sqlite_module_patches()
+        mock_checkpointer = MagicMock()
+        mock_saver.from_conn_string.return_value = mock_checkpointer
+
+        with ctx, unittest.mock.patch(
+            "research_agent.graph.build_graph"
+        ) as mock_build:
+            mock_graph = MagicMock()
+            mock_build.return_value = mock_graph
+            compiled = compile_graph(settings, checkpoint_db=None)
+
+        assert compiled is not None
+        mock_saver.from_conn_string.assert_called_once_with(str(expected_db))
+        mock_graph.compile.assert_called_once_with(checkpointer=mock_checkpointer)
