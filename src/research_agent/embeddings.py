@@ -2,6 +2,9 @@
 
 Provides the ``ResearchEmbeddings`` class for embedding, storing, and
 retrieving research content with deduplication support.
+
+Dependencies (chromadb, sentence-transformers) are optional and
+lazy-imported. Install with: ``pip install research-agent[local]``
 """
 
 from __future__ import annotations
@@ -10,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from pydantic import BaseModel, Field
+
+from research_agent.exceptions import EmbeddingError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -114,20 +119,43 @@ class ResearchEmbeddings:
             ChromaDB client instance.
 
         Raises:
-            NotImplementedError: Stub -- full implementation pending.
+            EmbeddingError: If chromadb is not installed.
         """
-        raise NotImplementedError("_get_client is not yet implemented")
+        if self._client is not None:
+            return self._client
+
+        try:
+            import chromadb
+        except ImportError as exc:
+            raise EmbeddingError(
+                "chromadb is required for embeddings. "
+                "Install with: pip install research-agent[local]"
+            ) from exc
+
+        self._client = chromadb.PersistentClient(path=self.persist_directory)
+        logger.info("chromadb_client_created", path=self.persist_directory)
+        return self._client
 
     def _get_collection(self) -> Any:
-        """Get or create the ChromaDB collection.
+        """Get or create the ChromaDB collection with cosine similarity.
 
         Returns:
             ChromaDB collection instance.
-
-        Raises:
-            NotImplementedError: Stub -- full implementation pending.
         """
-        raise NotImplementedError("_get_collection is not yet implemented")
+        if self._collection is not None:
+            return self._collection
+
+        client = self._get_client()
+        self._collection = client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info(
+            "chromadb_collection_ready",
+            name=self.collection_name,
+            count=self._collection.count(),
+        )
+        return self._collection
 
     def _get_model(self) -> Any:
         """Lazy-load the sentence-transformers embedding model.
@@ -136,9 +164,24 @@ class ResearchEmbeddings:
             A SentenceTransformer model instance.
 
         Raises:
-            NotImplementedError: Stub -- full implementation pending.
+            EmbeddingError: If sentence-transformers is not installed.
         """
-        raise NotImplementedError("_get_model is not yet implemented")
+        if self._model is not None:
+            return self._model
+
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise EmbeddingError(
+                "sentence-transformers is required for embeddings. "
+                "Install with: pip install research-agent[local]"
+            ) from exc
+
+        self._model = SentenceTransformer(
+            self.model_name, trust_remote_code=True
+        )
+        logger.info("embedding_model_loaded", model=self.model_name)
+        return self._model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts.
@@ -147,28 +190,70 @@ class ResearchEmbeddings:
             texts: Text strings to embed.
 
         Returns:
-            List of embedding vectors.
+            List of embedding vectors (each a list of floats).
 
         Raises:
-            NotImplementedError: Stub -- full implementation pending.
+            EmbeddingError: If the embedding model fails.
         """
-        raise NotImplementedError("embed is not yet implemented")
+        if not texts:
+            return []
+
+        model = self._get_model()
+        try:
+            embeddings = model.encode(texts, normalize_embeddings=True)
+            return [vec.tolist() for vec in embeddings]
+        except Exception as exc:
+            raise EmbeddingError(f"Embedding failed: {exc}") from exc
 
     def add_documents(self, documents: list[EmbeddingDocument]) -> int:
-        """Add documents to the vector store.
+        """Add documents to the vector store with deduplication.
 
-        Skips documents that are detected as near-duplicates.
+        Checks each document against existing content before adding.
+        Documents with similarity above ``content_dedup_threshold``
+        are skipped as duplicates.
 
         Args:
             documents: Documents to add.
 
         Returns:
             Number of documents actually added (excluding duplicates).
-
-        Raises:
-            NotImplementedError: Stub -- full implementation pending.
         """
-        raise NotImplementedError("add_documents is not yet implemented")
+        if not documents:
+            return 0
+
+        collection = self._get_collection()
+        added = 0
+
+        for doc in documents:
+            # Check for duplicates before adding
+            dedup = self.check_duplicate(doc.content)
+            if dedup.is_duplicate:
+                logger.debug(
+                    "document_skipped_duplicate",
+                    doc_id=doc.id,
+                    similar_to=dedup.most_similar_id,
+                    score=dedup.similarity_score,
+                )
+                continue
+
+            # Embed and add
+            vectors = self.embed([doc.content])
+            collection.add(
+                ids=[doc.id],
+                embeddings=vectors,
+                documents=[doc.content],
+                metadatas=[doc.metadata] if doc.metadata else None,
+            )
+            added += 1
+            logger.debug("document_added", doc_id=doc.id)
+
+        logger.info(
+            "add_documents_complete",
+            total=len(documents),
+            added=added,
+            skipped=len(documents) - added,
+        )
+        return added
 
     def search(
         self,
@@ -184,15 +269,57 @@ class ResearchEmbeddings:
             where: Optional ChromaDB metadata filter.
 
         Returns:
-            List of similarity results, ordered by descending score.
-
-        Raises:
-            NotImplementedError: Stub -- full implementation pending.
+            List of similarity results, ordered by descending similarity.
         """
-        raise NotImplementedError("search is not yet implemented")
+        collection = self._get_collection()
+
+        if collection.count() == 0:
+            return []
+
+        # Clamp n_results to available documents
+        actual_n = min(n_results, collection.count())
+
+        query_embedding = self.embed([query])
+
+        kwargs: dict[str, Any] = {
+            "query_embeddings": query_embedding,
+            "n_results": actual_n,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            kwargs["where"] = where
+
+        raw = collection.query(**kwargs)
+
+        results: list[SimilarityResult] = []
+        if raw["ids"] and raw["ids"][0]:
+            ids = raw["ids"][0]
+            docs = raw["documents"][0] if raw.get("documents") else [""] * len(ids)
+            distances = raw["distances"][0] if raw.get("distances") else [1.0] * len(ids)
+            metadatas = raw["metadatas"][0] if raw.get("metadatas") else [{}] * len(ids)
+
+            for i, doc_id in enumerate(ids):
+                # ChromaDB cosine distance = 1 - similarity
+                similarity = 1.0 - distances[i]
+                results.append(
+                    SimilarityResult(
+                        id=doc_id,
+                        content=docs[i] or "",
+                        score=max(0.0, min(1.0, similarity)),
+                        metadata=metadatas[i] or {},
+                    )
+                )
+
+        # Sort by descending score
+        results.sort(key=lambda r: r.score, reverse=True)
+        return results
 
     def check_duplicate(self, content: str) -> DeduplicationResult:
         """Check whether content is a near-duplicate of an existing document.
+
+        Uses the content dedup threshold (0.85) for content-level
+        similarity and the exact dedup threshold (0.95) for near-exact
+        matches.
 
         Args:
             content: Text content to check.
@@ -200,28 +327,56 @@ class ResearchEmbeddings:
         Returns:
             A ``DeduplicationResult`` indicating whether the content is
             a duplicate and the closest match.
-
-        Raises:
-            NotImplementedError: Stub -- full implementation pending.
         """
-        raise NotImplementedError("check_duplicate is not yet implemented")
+        collection = self._get_collection()
+
+        if collection.count() == 0:
+            return DeduplicationResult()
+
+        query_embedding = self.embed([content])
+        raw = collection.query(
+            query_embeddings=query_embedding,
+            n_results=1,
+            include=["distances"],
+        )
+
+        if not raw["ids"] or not raw["ids"][0]:
+            return DeduplicationResult()
+
+        distance = raw["distances"][0][0]
+        similarity = 1.0 - distance
+        similarity = max(0.0, min(1.0, similarity))
+        most_similar_id = raw["ids"][0][0]
+
+        is_duplicate = similarity >= self.content_dedup_threshold
+
+        return DeduplicationResult(
+            is_duplicate=is_duplicate,
+            most_similar_id=most_similar_id,
+            similarity_score=similarity,
+        )
 
     def delete_collection(self) -> None:
-        """Delete the entire ChromaDB collection.
-
-        Raises:
-            NotImplementedError: Stub -- full implementation pending.
-        """
-        raise NotImplementedError("delete_collection is not yet implemented")
+        """Delete the entire ChromaDB collection."""
+        client = self._get_client()
+        try:
+            client.delete_collection(name=self.collection_name)
+            self._collection = None
+            logger.info("collection_deleted", name=self.collection_name)
+        except Exception as exc:
+            logger.warning(
+                "collection_delete_failed",
+                name=self.collection_name,
+                error=str(exc),
+            )
 
     @property
     def count(self) -> int:
         """Return the number of documents in the collection.
 
         Returns:
-            Document count.
-
-        Raises:
-            NotImplementedError: Stub -- full implementation pending.
+            Document count, or 0 if the collection does not exist.
         """
-        raise NotImplementedError("count is not yet implemented")
+        collection = self._get_collection()
+        result: int = collection.count()
+        return result
