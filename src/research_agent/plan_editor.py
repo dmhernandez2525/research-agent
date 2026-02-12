@@ -68,6 +68,25 @@ sub_questions:
 """
 
 
+def _yaml_quote(value: str) -> str:
+    """Quote a string for safe YAML embedding.
+
+    Uses double quotes when the value contains special characters,
+    otherwise emits the value unquoted.
+
+    Args:
+        value: The string to quote.
+
+    Returns:
+        A YAML-safe string representation.
+    """
+    needs_quoting = any(c in value for c in ":#{}[]&*?|>!%@`'\"\\,\n")
+    if needs_quoting:
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
 def plan_to_yaml(sub_questions: list[dict[str, Any]]) -> str:
     """Serialize sub-questions to an editable YAML string.
 
@@ -83,12 +102,8 @@ def plan_to_yaml(sub_questions: list[dict[str, Any]]) -> str:
         question = sq.get("question", "")
         rationale = sq.get("rationale", "")
         lines.append(f"  - id: {sq_id}")
-        lines.append(
-            f"    question: {yaml.safe_dump(question, default_flow_style=True).strip()}"
-        )
-        lines.append(
-            f"    rationale: {yaml.safe_dump(rationale, default_flow_style=True).strip()}"
-        )
+        lines.append(f"    question: {_yaml_quote(question)}")
+        lines.append(f"    rationale: {_yaml_quote(rationale)}")
         lines.append("")
     return "\n".join(lines)
 
