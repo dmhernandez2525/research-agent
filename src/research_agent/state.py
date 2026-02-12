@@ -7,7 +7,7 @@ accumulation across graph nodes.
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -16,18 +16,22 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 
-class SubQuestion(BaseModel):
-    """A decomposed sub-question from the planner."""
+class Subtopic(BaseModel):
+    """A decomposed subtopic from the planner."""
 
-    id: int = Field(description="1-based sub-question index.")
-    question: str = Field(description="The sub-question text.")
-    rationale: str = Field(default="", description="Why this sub-question matters.")
+    id: int = Field(description="1-based subtopic index.")
+    question: str = Field(description="The subtopic question text.")
+    rationale: str = Field(default="", description="Why this subtopic matters.")
+    search_queries: list[str] = Field(
+        default_factory=list, description="Pre-generated search queries."
+    )
+    status: str = Field(default="pending", description="Processing status.")
 
 
 class SearchResult(BaseModel):
     """A single web search result."""
 
-    sub_question_id: int = Field(description="ID of the originating sub-question.")
+    subtopic_id: int = Field(description="ID of the originating subtopic.")
     query: str = Field(description="The search query that produced this result.")
     title: str = Field(default="")
     url: str = Field(description="Result URL.")
@@ -35,11 +39,11 @@ class SearchResult(BaseModel):
     score: float = Field(default=0.0, ge=0.0, le=1.0, description="Relevance score.")
 
 
-class ScrapedContent(BaseModel):
+class ScrapedPage(BaseModel):
     """Extracted content from a scraped web page."""
 
     url: str = Field(description="Source URL.")
-    sub_question_id: int = Field(description="ID of the originating sub-question.")
+    subtopic_id: int = Field(description="ID of the originating subtopic.")
     title: str = Field(default="")
     content: str = Field(default="", description="Extracted text content.")
     word_count: int = Field(default=0, ge=0)
@@ -48,11 +52,11 @@ class ScrapedContent(BaseModel):
     )
 
 
-class Summary(BaseModel):
-    """A per-subtask summary of scraped content."""
+class SubtopicSummary(BaseModel):
+    """A per-subtopic summary of scraped content."""
 
-    sub_question_id: int = Field(description="ID of the originating sub-question.")
-    sub_question: str = Field(default="", description="The sub-question text.")
+    subtopic_id: int = Field(description="ID of the originating subtopic.")
+    sub_question: str = Field(default="", description="The subtopic question text.")
     summary: str = Field(description="Compressed summary text.")
     source_urls: list[str] = Field(default_factory=list)
     key_findings: list[str] = Field(default_factory=list)
@@ -99,25 +103,28 @@ class ResearchState(TypedDict, total=False):
     # Iteration tracking
     current_subtopic_index: int
     search_retry_count: int
-    seen_urls: list[str]
+    seen_urls: Annotated[list[str], operator.add]
 
     # Planner output
-    sub_questions: list[SubQuestion]
+    subtopics: list[Subtopic]
 
-    # Search output (accumulates across iterations)
+    # Search output (accumulates)
     search_results: Annotated[list[SearchResult], operator.add]
 
     # Scraper output (accumulates)
-    scraped_content: Annotated[list[ScrapedContent], operator.add]
+    scraped_pages: Annotated[list[ScrapedPage], operator.add]
 
     # Summarizer output (accumulates)
-    summaries: Annotated[list[Summary], operator.add]
+    subtopic_summaries: Annotated[list[SubtopicSummary], operator.add]
 
     # Synthesizer output
     final_report: str
 
     # Provenance
     sources: Annotated[list[Source], operator.add]
+
+    # Report quality metadata
+    report_metadata: dict[str, Any]
 
     # Error tracking (accumulates)
     error_log: Annotated[list[ErrorEntry], operator.add]

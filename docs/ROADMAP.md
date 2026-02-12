@@ -4,23 +4,20 @@
 
 ## Phase 1: MVP (Core Pipeline)
 
-**Target:** 2 weeks
 **Goal:** `research-agent "topic"` produces a report end-to-end
 
 | Task | Gap Ref | Status |
 |------|---------|--------|
 | Project scaffolding with uv + pyproject.toml | - | Done |
-| Configuration system (pydantic-settings + config.yaml) | G-16 | Not Started |
-| LangGraph StateGraph with 5 nodes (plan, search, scrape, summarize, synthesize) | G-01 | Not Started |
-| Tavily search with ExpandSearch pattern (3 variations, 34.3% improvement) | G-03 | Not Started |
-| Trafilatura scraping with quality scoring (F1=0.958) | G-04 | Not Started |
-| Basic model routing (Anthropic primary, OpenAI fallback) | G-07 | Not Started |
-| SQLite checkpointing via LangGraph SqliteSaver | G-05 | Not Started |
-| Basic Rich CLI with progress bars and plan approval | G-13 | Not Started |
-| Markdown report output with citation management | G-09 | Not Started |
-| Unit tests with VCR.py recording setup | G-15 | Not Started |
-
-**Milestone:** Running `research-agent "topic"` produces a complete Markdown report with cited sources from end-to-end pipeline execution.
+| Configuration system (pydantic-settings + config.yaml) | G-16 | Done |
+| LangGraph StateGraph with 5 nodes (plan, search, scrape, summarize, synthesize) | G-01 | Done |
+| Tavily search with ExpandSearch pattern (3 variations, 34.3% improvement) | G-03 | Done |
+| Trafilatura scraping with quality scoring (F1=0.958) | G-04 | Done |
+| Basic model routing (litellm with Anthropic primary, OpenAI fallback) | G-07 | Done |
+| SQLite checkpointing via LangGraph SqliteSaver | G-05 | Done |
+| Basic Rich CLI with progress bars and plan approval | G-13 | Done |
+| Markdown report output with citation management | G-09 | Done |
+| Unit tests with pytest-asyncio setup | G-15 | Done |
 
 **Key research insights driving Phase 1:**
 - Only 4 of 16+ surveyed agents have genuine crash resilience (G-05)
@@ -32,21 +29,23 @@
 
 ## Phase 2: Resilience & Quality
 
-**Target:** 2 weeks
 **Goal:** Agent recovers from crash mid-research and stays within budget
 
 | Task | Gap Ref | Status |
 |------|---------|--------|
-| Atomic file-based checkpoints (temp+fsync+os.replace with SHA-256) | G-05, G-06 | Not Started |
-| Observation masking (83.9% token savings, M=10 rolling window) | G-08 | Not Started |
-| Four-tier graceful degradation (FULL/REDUCED/CACHED/PARTIAL) | G-07, G-10 | Not Started |
-| Budget tracking with $2.00 cap and 80% warning threshold | G-10 | Not Started |
-| Self-evaluation: LLM-as-judge, 5 dimensions, 3.5/5.0 threshold | G-11 | Not Started |
-| Prompt caching (Anthropic 90% discount, stability ordering) | G-17 | Not Started |
-| Content quality scoring (reject below 0.4, flag 0.4-0.7) | G-04 | Not Started |
-| Structured logging with provenance chains (structlog) | G-14 | Not Started |
-
-**Milestone:** Agent recovers from a crash mid-research, resumes from the last checkpoint, and enforces cost caps throughout execution.
+| Atomic file-based checkpoints (temp+fsync+os.replace with SHA-256) | G-05, G-06 | Done |
+| Token estimation for context management | G-08 | Done |
+| Model routing with tenacity retry and fallback chains | G-07, G-10 | Done |
+| Budget tracking with configurable cap and warning threshold | G-10 | Done |
+| Self-evaluation: LLM-as-judge, 5 dimensions, scoring | G-11 | Done |
+| Prompt caching (stability ordering) | G-17 | Done |
+| Content quality scoring (reject below threshold, flag marginal) | G-04 | Done |
+| Structured logging with provenance chains (structlog) | G-14 | Done |
+| Scraping: paywall detection, freshness scoring, sanitization | G-04 | Done |
+| Scraping: structured data extraction (JSON-LD, microdata, Open Graph) | G-04 | Done |
+| Metrics collection and dashboard display | G-14 | Done |
+| Human-in-the-loop plan review ($EDITOR and inline editing) | G-13 | Done |
+| Event logging and progress tracking | G-14 | Done |
 
 **Key research insights driving Phase 2:**
 - 83.9% of context tokens come from tool observations (NeurIPS 2025, "The Complexity Trap")
@@ -59,39 +58,47 @@
 
 ## Phase 3: Advanced Features
 
-**Target:** 3 weeks
 **Goal:** Handles complex multi-topic research with deduplication
 
 | Task | Gap Ref | Status |
 |------|---------|--------|
+| Centralized exception hierarchy | - | Done |
+| LiteLLM migration (replace langchain for LLM calls) | G-07 | Done |
+| Data model rename (Subtopic, ScrapedPage, SubtopicSummary) | - | Done |
+| Coverage improvements (98% overall) | G-15 | Done |
+| Plan node implementation (LLM-powered query decomposition) | G-01 | In Progress |
 | ChromaDB vector store for deduplication (0.85 similarity, 0.95 exact) | G-12 | Not Started |
 | nomic-embed-text-v1.5 local embeddings (768d, 8K context) | G-12 | Not Started |
 | Serial section-by-section synthesis (bypasses ~2,000 word ceiling) | G-09 | Not Started |
 | Crawl4AI for JavaScript-heavy sites | G-04 | Not Started |
-| MCP server integration for extensibility | G-19 | Not Started |
 | API key rotation for heavy workloads | G-18 | Not Started |
-| Human-in-the-loop plan review via LangGraph interrupt() | G-13 | Not Started |
 | Multi-format output (Markdown, PDF via pymupdf) | G-20 | Not Started |
-
-**Milestone:** Complex multi-topic research queries produce deduplicated, high-quality reports with vector-backed source management.
+| DiskCache for LLM deduplication | G-17 | Not Started |
+| Prompt versioning for cache invalidation | G-17 | Not Started |
+| Adaptive rate limiting | G-18 | Not Started |
 
 ---
 
 ## Phase 4: Ecosystem Integration
 
-**Target:** 2 weeks
 **Goal:** Drop-in replacement for Claude.ai research step
 
 | Task | Gap Ref | Status |
 |------|---------|--------|
 | Direct integration with RESEARCH_PROMPT.md format | G-02 | Not Started |
 | COMPILED_RESEARCH.md output matching BUILD_PROMPT.md expectations | G-02 | Not Started |
-| AgentPromptsManager "Run Research" button | G-19 | Not Started |
-| Enhancement research mode for existing projects | - | Not Started |
 | Cross-session knowledge/memory (ChromaDB persistence) | G-12 | Not Started |
-| Web UI for real-time progress monitoring | G-20 | Not Started |
 
-**Milestone:** Research agent plugs directly into the Apps That Build Apps pipeline, replacing the manual Claude.ai research step with automated, reproducible output.
+---
+
+## Deferred to Phase 5
+
+| Task | Gap Ref | Reason |
+|------|---------|--------|
+| MCP server integration for extensibility | G-19 | Full protocol server; better as standalone phase |
+| AgentPromptsManager "Run Research" button | G-19 | Requires external project integration |
+| Web UI for real-time progress monitoring | G-20 | Requires FastAPI + WebSocket + React frontend |
+| Enhancement research mode for existing projects | - | Follows after RESEARCH_PROMPT integration |
 
 ---
 
@@ -115,7 +122,7 @@ The following gaps were identified during Session 4 of the research phase. Each 
 | G-12 | Vector store deduplication | 3-4 | Medium |
 | G-13 | CLI UX (plan approval, progress, Ctrl+C) | 1-3 | High |
 | G-14 | Structured logging with provenance | 2 | Medium |
-| G-15 | Test infrastructure (VCR.py, fixtures) | 1 | High |
+| G-15 | Test infrastructure (pytest, fixtures) | 1 | High |
 | G-16 | 4-layer configuration resolution | 1 | High |
 | G-17 | Prompt caching optimization | 2 | Medium |
 | G-18 | API key rotation | 3 | Low |

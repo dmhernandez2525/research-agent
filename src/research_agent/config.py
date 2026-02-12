@@ -1,14 +1,17 @@
 """Configuration with 4-layer resolution: defaults -> YAML -> env -> CLI.
 
 Uses pydantic-settings with YamlConfigSettingsSource for layered configuration.
+Supports ``.env`` file loading, ``RESEARCH_AGENT_`` prefixed env vars, and
+nested delimiter ``__`` for overriding sub-model fields.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field
+import structlog
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -19,6 +22,8 @@ try:
     from pydantic_settings import YamlConfigSettingsSource
 except ImportError:  # pragma: no cover
     YamlConfigSettingsSource = None  # type: ignore[assignment, misc]
+
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +60,10 @@ class ScrapingSettings(BaseModel):
     max_concurrent: int = Field(default=5, gt=0)
     max_content_length: int = Field(
         default=500_000, gt=0, description="Max characters per scraped page."
+    )
+    js_fallback: bool = Field(
+        default=False,
+        description="Use Crawl4AI as fallback for JS-heavy sites with low quality scores.",
     )
 
 
@@ -111,6 +120,11 @@ class ReportSettings(BaseModel):
         gt=0,
         description="Soft max length in tokens for the final report.",
     )
+    serial_synthesis_threshold: int = Field(
+        default=3,
+        ge=1,
+        description="Use serial section-by-section synthesis when subtopic count exceeds this.",
+    )
 
 
 class LoggingSettings(BaseModel):
@@ -141,10 +155,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="RESEARCH_AGENT_",
         env_nested_delimiter="__",
+        env_file=".env",
+        env_file_encoding="utf-8",
         yaml_file="config.yaml",
         yaml_file_encoding="utf-8",
         extra="ignore",
     )
+
+    _config_path_override: ClassVar[Path | None] = None
 
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
@@ -167,23 +185,30 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Customise settings source priority.
 
-        Resolution order (last wins):
-            init_settings (CLI) > env > yaml > defaults
+        Resolution order (first = highest priority):
+            init_settings (CLI) > env_settings > dotenv (.env) > yaml > defaults
 
         Args:
             settings_cls: The settings class.
             init_settings: Init / programmatic overrides.
             env_settings: Environment variable source.
-            dotenv_settings: Dotenv file source.
-            file_secret_settings: Secret file source.
+            dotenv_settings: Dotenv file source (.env).
+            file_secret_settings: Secret file source (unused).
 
         Returns:
             Ordered tuple of settings sources (first = highest priority).
         """
-        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]
+        sources: list[PydanticBaseSettingsSource] = [
+            init_settings,
+            env_settings,
+            dotenv_settings,
+        ]
 
         if YamlConfigSettingsSource is not None:
-            sources.append(YamlConfigSettingsSource(settings_cls))
+            yaml_file = cls._config_path_override or settings_cls.model_config.get(
+                "yaml_file", "config.yaml"
+            )
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=yaml_file))
 
         return tuple(sources)
 
@@ -197,8 +222,33 @@ class Settings(BaseSettings):
 
         Returns:
             Fully-resolved Settings instance.
-        """
-        if config_path is not None:
-            overrides.setdefault("_yaml_file", str(config_path))
 
-        return cls(**overrides)
+        Raises:
+            ValidationError: If any setting value fails validation.
+        """
+        cls._config_path_override = config_path
+        try:
+            return cls(**overrides)
+        finally:
+            cls._config_path_override = None
+
+
+def format_validation_error(exc: ValidationError) -> str:
+    """Format a Pydantic ValidationError into a user-friendly message.
+
+    Args:
+        exc: The validation error to format.
+
+    Returns:
+        A multi-line string with each error on its own line.
+    """
+    lines: list[str] = []
+    for error in exc.errors():
+        loc = " -> ".join(str(part) for part in error["loc"])
+        msg = error["msg"]
+        raw_input = error.get("input")
+        if raw_input is not None:
+            lines.append(f"  {loc}: {msg} (got {raw_input!r})")
+        else:
+            lines.append(f"  {loc}: {msg}")
+    return "Configuration error:\n" + "\n".join(lines)

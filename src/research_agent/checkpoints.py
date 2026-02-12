@@ -10,30 +10,82 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 from pydantic import BaseModel, Field
 
+from research_agent.exceptions import CheckpointCorruptionError, CheckpointError
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
+_TRASH_DIR = os.path.expanduser("~/.Trash")
+_CURRENT_SCHEMA_VERSION = 2
+
+
+def generate_run_id() -> str:
+    """Generate a unique run ID for checkpoint scoping.
+
+    Returns:
+        A short, filesystem-safe unique identifier.
+    """
+    return f"run-{uuid.uuid4().hex[:12]}"
+
+
+def checkpoint_id_for_step(step_index: int) -> str:
+    """Generate a checkpoint ID from a step index.
+
+    Produces IDs in the format ``checkpoint_0001`` for consistent
+    lexicographic ordering.
+
+    Args:
+        step_index: The zero-based step index.
+
+    Returns:
+        A formatted checkpoint identifier string.
+    """
+    return f"checkpoint_{step_index:04d}"
+
+
+# ---------------------------------------------------------------------------
+# Schema migration
+# ---------------------------------------------------------------------------
+
+
+def migrate_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Migrate checkpoint state to the current schema version.
+
+    Applies additive-only migrations (new fields with defaults) so that
+    old checkpoints are compatible with the current code. Never removes
+    fields from the state.
+
+    Args:
+        state: The loaded state dict (may be from an older schema version).
+
+    Returns:
+        The migrated state dict at ``_CURRENT_SCHEMA_VERSION``.
+    """
+    version = state.get("_schema_version", 1)
+
+    if version < 2:
+        # v2: added report_metadata and error_log fields
+        state.setdefault("report_metadata", {})
+        state.setdefault("error_log", [])
+
+    state["_schema_version"] = _CURRENT_SCHEMA_VERSION
+    return state
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
-
-
-class CheckpointError(Exception):
-    """Base exception for checkpoint operations."""
-
-
-class CheckpointCorruptionError(CheckpointError):
-    """Raised when a checkpoint fails integrity verification."""
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +102,9 @@ class CheckpointMetadata(BaseModel):
     )
     step_index: int = Field(default=0, description="Graph step index at save time.")
     step_name: str = Field(default="", description="Graph node name at save time.")
+    schema_version: int = Field(
+        default=_CURRENT_SCHEMA_VERSION, description="Schema version at save time."
+    )
     sha256: str = Field(
         default="", description="SHA-256 hex digest of the state payload."
     )
@@ -138,6 +193,7 @@ class CheckpointManager:
         Raises:
             CheckpointError: If the save operation fails.
         """
+        state["_schema_version"] = _CURRENT_SCHEMA_VERSION
         payload = json.dumps(state, default=str, sort_keys=True).encode("utf-8")
         checksum = self._compute_checksum(payload)
 
@@ -198,6 +254,7 @@ class CheckpointManager:
                 )
 
         state: dict[str, Any] = json.loads(payload)
+        state = migrate_state(state)
         logger.info("checkpoint_loaded", checkpoint_id=checkpoint_id)
         return state
 
@@ -236,6 +293,68 @@ class CheckpointManager:
                 logger.warning("corrupt_metadata", path=str(meta_path))
         return metas
 
+    def recover_checkpoint(self) -> dict[str, Any] | None:
+        """Find and load the latest valid checkpoint, quarantining corrupted ones.
+
+        Iterates through checkpoints from newest to oldest. If a checkpoint
+        fails integrity verification, it is moved to the quarantine directory.
+        Returns the first valid checkpoint state, or ``None`` if no valid
+        checkpoints exist (fresh start).
+
+        Returns:
+            The deserialized state dict from the latest valid checkpoint,
+            or ``None`` if recovery is not possible.
+        """
+        checkpoints = self.list_checkpoints()
+        if not checkpoints:
+            logger.info("recovery_fresh_start", reason="no checkpoints found")
+            return None
+
+        for meta in checkpoints:
+            try:
+                state = self.load(meta.checkpoint_id)
+                logger.info(
+                    "recovery_success", checkpoint_id=meta.checkpoint_id
+                )
+                return state
+            except CheckpointCorruptionError:
+                logger.warning(
+                    "recovery_quarantine",
+                    checkpoint_id=meta.checkpoint_id,
+                )
+                self._quarantine(meta.checkpoint_id)
+            except CheckpointError:
+                logger.warning(
+                    "recovery_skip_missing",
+                    checkpoint_id=meta.checkpoint_id,
+                )
+
+        logger.info("recovery_fresh_start", reason="all checkpoints corrupt")
+        return None
+
+    def _quarantine(self, checkpoint_id: str) -> None:
+        """Move a corrupt checkpoint to the quarantine directory.
+
+        Args:
+            checkpoint_id: ID of the checkpoint to quarantine.
+        """
+        quarantine_dir = self.directory / "quarantine"
+        quarantine_dir.mkdir(exist_ok=True)
+
+        for path in (
+            self._checkpoint_path(checkpoint_id),
+            self._metadata_path(checkpoint_id),
+        ):
+            if path.exists():
+                dest = quarantine_dir / path.name
+                shutil.move(str(path), str(dest))
+
+        logger.info(
+            "checkpoint_quarantined",
+            checkpoint_id=checkpoint_id,
+            quarantine_dir=str(quarantine_dir),
+        )
+
     def _rotate(self) -> None:
         """Remove oldest checkpoints exceeding ``max_checkpoints``.
 
@@ -252,7 +371,7 @@ class CheckpointManager:
             meta_path = self._metadata_path(old.checkpoint_id)
             for path in (cp_path, meta_path):
                 if path.exists():
-                    path.unlink()
+                    shutil.move(str(path), os.path.join(_TRASH_DIR, path.name))
             logger.debug("checkpoint_rotated", checkpoint_id=old.checkpoint_id)
 
     @staticmethod
@@ -275,5 +394,7 @@ class CheckpointManager:
             if not fd_closed:
                 os.close(fd)
             if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+                shutil.move(
+                    tmp_path, os.path.join(_TRASH_DIR, os.path.basename(tmp_path))
+                )
             raise

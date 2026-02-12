@@ -18,10 +18,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "langchain>=1.0,<2",
+    "litellm>=1.50,<2",
     "langgraph>=1.0,<2",
-    "langchain-anthropic>=1.0,<2",
-    "langchain-openai>=1.0,<2",
     "chromadb>=1.4,<2",
     "httpx>=0.28,<1",
     "trafilatura>=2.0,<3",
@@ -37,16 +35,18 @@ dependencies = [
 
 [project.optional-dependencies]
 local = ["sentence-transformers>=3.3,<4", "torch>=2.5,<3"]
+js = ["crawl4ai>=0.4,<1"]
 pdf = ["pymupdf>=1.25,<2"]
-google = ["langchain-google-genai>=2,<3"]
+google = []
 
 [dependency-groups]
-dev = ["ruff>=0.9,<1", "mypy>=1.14,<2", "pre-commit>=4.0,<5"]
+dev = ["ruff>=0.9,<1", "mypy>=1.14,<2", "pre-commit>=4.0,<5", "types-PyYAML>=6,<7"]
 test = [
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.25,<1",
     "pytest-cov>=6.0,<7",
     "respx>=0.22,<1",
+    "vcrpy>=8.1.1",
 ]
 
 [project.scripts]
@@ -98,9 +98,13 @@ module = [
     "chromadb.*",
     "tiktoken.*",
     "langgraph.*",
-    "langchain.*",
-    "langchain_anthropic.*",
-    "langchain_openai.*",
+    "litellm.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
+    "crawl4ai",
+    "crawl4ai.*",
+    "pymupdf",
+    "pymupdf.*",
 ]
 ignore_missing_imports = true
 
