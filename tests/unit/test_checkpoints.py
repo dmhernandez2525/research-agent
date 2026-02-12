@@ -9,12 +9,14 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from research_agent.checkpoints import (
+    _CURRENT_SCHEMA_VERSION,
     CheckpointCorruptionError,
     CheckpointError,
     CheckpointManager,
     CheckpointMetadata,
     checkpoint_id_for_step,
     generate_run_id,
+    migrate_state,
 )
 
 if TYPE_CHECKING:
@@ -339,3 +341,61 @@ class TestQuarantine:
         mgr = CheckpointManager(directory=tmp_path)
         # Should not raise even if files don't exist
         mgr._quarantine("nonexistent")
+
+
+# ---- Schema migration --------------------------------------------------------
+
+
+class TestMigrateState:
+    """migrate_state upgrades old checkpoint schemas."""
+
+    def test_v1_to_current(self) -> None:
+        old_state: dict[str, Any] = {"query": "test", "_schema_version": 1}
+        migrated = migrate_state(old_state)
+        assert migrated["_schema_version"] == _CURRENT_SCHEMA_VERSION
+        assert "report_metadata" in migrated
+        assert "error_log" in migrated
+
+    def test_no_version_treated_as_v1(self) -> None:
+        old_state: dict[str, Any] = {"query": "test"}
+        migrated = migrate_state(old_state)
+        assert migrated["_schema_version"] == _CURRENT_SCHEMA_VERSION
+        assert migrated["report_metadata"] == {}
+        assert migrated["error_log"] == []
+
+    def test_current_version_unchanged(self) -> None:
+        state: dict[str, Any] = {
+            "query": "test",
+            "_schema_version": _CURRENT_SCHEMA_VERSION,
+            "report_metadata": {"custom": True},
+            "error_log": [{"msg": "err"}],
+        }
+        migrated = migrate_state(state)
+        assert migrated["report_metadata"] == {"custom": True}
+        assert migrated["error_log"] == [{"msg": "err"}]
+
+    def test_preserves_existing_fields(self) -> None:
+        state: dict[str, Any] = {"query": "test", "step": 5}
+        migrated = migrate_state(state)
+        assert migrated["query"] == "test"
+        assert migrated["step"] == 5
+
+    def test_save_includes_schema_version(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path)
+        mgr.save("cp-001", {"query": "test"})
+        loaded = mgr.load("cp-001")
+        assert loaded["_schema_version"] == _CURRENT_SCHEMA_VERSION
+
+    def test_load_migrates_old_checkpoint(self, tmp_path: Path) -> None:
+        import json
+
+        mgr = CheckpointManager(directory=tmp_path)
+        # Manually write a v1 checkpoint (no schema version)
+        old_state = {"query": "old test"}
+        payload = json.dumps(old_state, sort_keys=True).encode("utf-8")
+        cp_path = tmp_path / "cp-old.json"
+        cp_path.write_bytes(payload)
+        # No metadata file, so no hash check
+        loaded = mgr.load("cp-old")
+        assert loaded["_schema_version"] == _CURRENT_SCHEMA_VERSION
+        assert "report_metadata" in loaded
