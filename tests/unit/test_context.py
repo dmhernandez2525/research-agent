@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from research_agent.context import (
+    _FILE_POINTER_MIN_CHARS,
+    _STAGE_1_THRESHOLD,
+    _STAGE_2_THRESHOLD,
+    _STAGE_3_THRESHOLD,
     CompactionResult,
     ContextManager,
+    MaskingStage,
     Turn,
 )
 
@@ -41,6 +46,26 @@ class TestTurn:
 
 
 # ---------------------------------------------------------------------------
+# MaskingStage enum
+# ---------------------------------------------------------------------------
+
+
+class TestMaskingStage:
+    """MaskingStage enum ordering."""
+
+    def test_ordering(self) -> None:
+        assert MaskingStage.NONE < MaskingStage.STAGE_1
+        assert MaskingStage.STAGE_1 < MaskingStage.STAGE_2
+        assert MaskingStage.STAGE_2 < MaskingStage.STAGE_3
+
+    def test_values(self) -> None:
+        assert MaskingStage.NONE == 0
+        assert MaskingStage.STAGE_1 == 1
+        assert MaskingStage.STAGE_2 == 2
+        assert MaskingStage.STAGE_3 == 3
+
+
+# ---------------------------------------------------------------------------
 # CompactionResult model
 # ---------------------------------------------------------------------------
 
@@ -59,6 +84,20 @@ class TestCompactionResult:
         assert result.compacted_tokens == 2000
         assert result.turns_masked == 3
         assert result.turns_total == 15
+
+    def test_default_stage(self) -> None:
+        result = CompactionResult(
+            original_tokens=0, compacted_tokens=0, turns_masked=0, turns_total=0,
+        )
+        assert result.stage_applied == MaskingStage.NONE
+
+    def test_stage_applied(self) -> None:
+        result = CompactionResult(
+            original_tokens=100, compacted_tokens=50,
+            turns_masked=1, turns_total=2,
+            stage_applied=MaskingStage.STAGE_2,
+        )
+        assert result.stage_applied == MaskingStage.STAGE_2
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +161,7 @@ class TestAddTurn:
         mgr.add_turn(Turn(role="user", content="Hello"))
         turns = mgr.turns
         turns.append(Turn(role="user", content="Extra"))
-        assert mgr.turn_count == 1  # original unchanged
+        assert mgr.turn_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +183,9 @@ class TestTokenTracking:
         assert mgr.total_tokens == 300
 
     def test_tokens_updated_after_compaction(self) -> None:
-        mgr = ContextManager(window_size=2, max_tokens=1_000_000)
+        # Use high max_tokens to prevent auto-compaction during add_turn,
+        # but total tokens hit 80% when all are added (2500/3125=80% => stage 1)
+        mgr = ContextManager(window_size=2, max_tokens=3125)
         for i in range(5):
             mgr.add_turn(
                 Turn(role="tool", content="x" * 100, token_count=500, step_name=f"step-{i}")
@@ -155,40 +196,100 @@ class TestTokenTracking:
 
 
 # ---------------------------------------------------------------------------
-# Window sizing
+# Utilization and active stage
+# ---------------------------------------------------------------------------
+
+
+class TestUtilization:
+    """utilization_percent and active_stage properties."""
+
+    def test_utilization_zero_when_empty(self) -> None:
+        mgr = ContextManager(max_tokens=1000)
+        assert mgr.utilization_percent == 0.0
+
+    def test_utilization_calculation(self) -> None:
+        mgr = ContextManager(max_tokens=1000)
+        mgr.add_turn(Turn(role="user", content="a", token_count=500))
+        assert mgr.utilization_percent == 50.0
+
+    def test_utilization_over_100(self) -> None:
+        mgr = ContextManager(max_tokens=100)
+        mgr.add_turn(Turn(role="user", content="a", token_count=200))
+        assert mgr.utilization_percent == 200.0
+
+    def test_utilization_zero_max(self) -> None:
+        mgr = ContextManager(max_tokens=0)
+        assert mgr.utilization_percent == 0.0
+
+    def test_stage_none_below_75(self) -> None:
+        mgr = ContextManager(max_tokens=1000)
+        mgr.add_turn(Turn(role="user", content="a", token_count=740))
+        assert mgr.active_stage == MaskingStage.NONE
+
+    def test_stage_1_at_75(self) -> None:
+        mgr = ContextManager(max_tokens=1000)
+        mgr.add_turn(Turn(role="user", content="a", token_count=750))
+        assert mgr.active_stage == MaskingStage.STAGE_1
+
+    def test_stage_2_at_80(self) -> None:
+        mgr = ContextManager(max_tokens=1000)
+        mgr.add_turn(Turn(role="user", content="a", token_count=800))
+        assert mgr.active_stage == MaskingStage.STAGE_2
+
+    def test_stage_3_at_85(self) -> None:
+        mgr = ContextManager(max_tokens=1000)
+        mgr.add_turn(Turn(role="user", content="a", token_count=850))
+        assert mgr.active_stage == MaskingStage.STAGE_3
+
+    def test_thresholds_are_correct(self) -> None:
+        assert _STAGE_1_THRESHOLD == 75.0
+        assert _STAGE_2_THRESHOLD == 80.0
+        assert _STAGE_3_THRESHOLD == 85.0
+
+
+# ---------------------------------------------------------------------------
+# Window sizing (stage 1 tests use utilization >= 75%)
 # ---------------------------------------------------------------------------
 
 
 class TestWindowSizing:
     """Window size controls which turns remain unmasked."""
 
+    def _make_mgr(self, window_size: int, total_tokens: int) -> ContextManager:
+        """Create a ContextManager where utilization is >= 75%."""
+        max_tokens = int(total_tokens / 0.80)  # 80% utilization -> stage 1+
+        return ContextManager(window_size=window_size, max_tokens=max_tokens)
+
     def test_within_window_not_masked(self) -> None:
-        mgr = ContextManager(window_size=5, max_tokens=1_000_000)
+        # 5 turns * 100 tokens = 500; max_tokens=625 => 80% utilization
+        mgr = self._make_mgr(window_size=5, total_tokens=500)
         for i in range(5):
             mgr.add_turn(Turn(role="tool", content="data", token_count=100, step_name=f"s-{i}"))
         mgr.compact()
         assert all(not t.masked for t in mgr.turns)
 
     def test_beyond_window_tool_turns_masked(self) -> None:
-        mgr = ContextManager(window_size=3, max_tokens=1_000_000)
+        mgr = self._make_mgr(window_size=3, total_tokens=600)
         for i in range(6):
             mgr.add_turn(Turn(role="tool", content="data", token_count=100, step_name=f"s-{i}"))
         mgr.compact()
         masked = [t for t in mgr.turns if t.masked]
         assert len(masked) == 3
 
-    def test_only_tool_turns_masked(self) -> None:
-        mgr = ContextManager(window_size=2, max_tokens=1_000_000)
+    def test_only_tool_turns_masked_at_stage_1(self) -> None:
+        # 4 turns: total ~700 tokens; max_tokens=875 => 80% utilization (stage 1)
+        # Stage 1 only masks tool turns
+        mgr = ContextManager(window_size=2, max_tokens=875)
         mgr.add_turn(Turn(role="user", content="question", token_count=50))
         mgr.add_turn(Turn(role="tool", content="answer data", token_count=500, step_name="search"))
         mgr.add_turn(Turn(role="assistant", content="summary", token_count=100))
         mgr.add_turn(Turn(role="user", content="followup", token_count=50))
         mgr.compact()
-        assert mgr.turns[0].masked is False  # user turn, not maskable
+        assert mgr.turns[0].masked is False  # user turn, not maskable at stage 1
         assert mgr.turns[1].masked is True   # tool turn outside window
 
     def test_window_size_one(self) -> None:
-        mgr = ContextManager(window_size=1, max_tokens=1_000_000)
+        mgr = self._make_mgr(window_size=1, total_tokens=400)
         for i in range(4):
             mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
         mgr.compact()
@@ -196,7 +297,7 @@ class TestWindowSizing:
         assert len(masked) == 3
 
     def test_large_window_no_masking(self) -> None:
-        mgr = ContextManager(window_size=100, max_tokens=1_000_000)
+        mgr = self._make_mgr(window_size=100, total_tokens=1000)
         for i in range(10):
             mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
         result = mgr.compact()
@@ -204,29 +305,32 @@ class TestWindowSizing:
 
 
 # ---------------------------------------------------------------------------
-# Compaction
+# Compaction (using utilization levels that trigger masking)
 # ---------------------------------------------------------------------------
 
 
 class TestCompaction:
-    """compact() masks older tool turns."""
+    """compact() masks older tool turns at appropriate stages."""
 
     def test_compact_returns_result(self) -> None:
-        mgr = ContextManager(window_size=2)
+        # 5*100=500; max_tokens=625 => 80% => stage 1
+        mgr = ContextManager(window_size=2, max_tokens=625)
         for i in range(5):
             mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
         result = mgr.compact()
         assert isinstance(result, CompactionResult)
 
     def test_compact_reduces_tokens(self) -> None:
-        mgr = ContextManager(window_size=2)
+        # 5*500=2500 tokens; max_tokens=3125 => 80% => stage 1
+        # High enough to avoid auto-compaction during add_turn
+        mgr = ContextManager(window_size=2, max_tokens=3125)
         for i in range(5):
             mgr.add_turn(Turn(role="tool", content="data", token_count=500, step_name=f"s-{i}"))
         result = mgr.compact()
         assert result.compacted_tokens < result.original_tokens
 
     def test_compact_reports_masked_count(self) -> None:
-        mgr = ContextManager(window_size=2)
+        mgr = ContextManager(window_size=2, max_tokens=625)
         for i in range(5):
             mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
         result = mgr.compact()
@@ -234,14 +338,15 @@ class TestCompaction:
         assert result.turns_total == 5
 
     def test_masked_content_includes_step_name(self) -> None:
-        mgr = ContextManager(window_size=1)
+        # 1010 tokens; max_tokens=1200 => ~84% => stage 2
+        mgr = ContextManager(window_size=1, max_tokens=1200)
         mgr.add_turn(Turn(role="tool", content="big output", token_count=1000, step_name="search"))
         mgr.add_turn(Turn(role="user", content="next", token_count=10))
         mgr.compact()
         assert mgr.turns[0].content == "[masked tool output from search]"
 
     def test_already_masked_not_remasked(self) -> None:
-        mgr = ContextManager(window_size=1)
+        mgr = ContextManager(window_size=1, max_tokens=375)
         for i in range(3):
             mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
         result1 = mgr.compact()
@@ -250,7 +355,7 @@ class TestCompaction:
         assert result2.turns_masked == 0
 
     def test_masked_token_count_reduced(self) -> None:
-        mgr = ContextManager(window_size=1)
+        mgr = ContextManager(window_size=1, max_tokens=5500)
         mgr.add_turn(Turn(role="tool", content="big data", token_count=5000, step_name="scrape"))
         mgr.add_turn(Turn(role="user", content="next", token_count=10))
         mgr.compact()
@@ -261,6 +366,99 @@ class TestCompaction:
         result = mgr.compact()
         assert result.turns_masked == 0
         assert result.turns_total == 0
+        assert result.stage_applied == MaskingStage.NONE
+
+    def test_no_masking_below_stage_1_threshold(self) -> None:
+        # 500 tokens; max_tokens=1000 => 50% => NONE
+        mgr = ContextManager(window_size=2, max_tokens=1000)
+        for i in range(5):
+            mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
+        result = mgr.compact()
+        assert result.turns_masked == 0
+        assert result.stage_applied == MaskingStage.NONE
+
+
+# ---------------------------------------------------------------------------
+# Three-stage masking
+# ---------------------------------------------------------------------------
+
+
+class TestThreeStageMasking:
+    """Progressive masking stages activate based on utilization."""
+
+    def test_stage_1_masks_only_tool_turns(self) -> None:
+        # 400 tokens; max_tokens=500 => 80% => stage 1 (but < 80 => stage 1)
+        # Actually 80% = stage 2. Let's use 76%.
+        mgr = ContextManager(window_size=1, max_tokens=526)
+        mgr.add_turn(Turn(role="assistant", content="summary", token_count=100, step_name="sum"))
+        mgr.add_turn(Turn(role="tool", content="data", token_count=200, step_name="search"))
+        mgr.add_turn(Turn(role="user", content="next", token_count=100))
+        # Total=400, 400/526=76% => stage 1
+        result = mgr.compact()
+        assert result.stage_applied == MaskingStage.STAGE_1
+        # Only tool turn (index 1) is outside window and maskable
+        assert mgr.turns[1].masked is True
+        # Assistant turn is NOT masked at stage 1
+        assert mgr.turns[0].masked is False
+
+    def test_stage_2_also_masks_assistant_turns(self) -> None:
+        # Need 80-84.9% utilization
+        mgr = ContextManager(window_size=1, max_tokens=500)
+        mgr.add_turn(Turn(role="assistant", content="summary", token_count=100, step_name="sum"))
+        mgr.add_turn(Turn(role="tool", content="data", token_count=200, step_name="search"))
+        mgr.add_turn(Turn(role="user", content="next", token_count=100))
+        # Total=400, 400/500=80% => stage 2
+        result = mgr.compact()
+        assert result.stage_applied == MaskingStage.STAGE_2
+        assert mgr.turns[0].masked is True  # assistant masked at stage 2
+        assert mgr.turns[1].masked is True  # tool masked at stage 1+
+        assert mgr.turns[0].content == "[compressed summary from sum]"
+
+    def test_stage_3_replaces_large_text_with_file_pointers(self) -> None:
+        # Need >= 85% utilization
+        large_content = "x" * (_FILE_POINTER_MIN_CHARS + 50)
+        mgr = ContextManager(window_size=1, max_tokens=350)
+        mgr.add_turn(Turn(role="user", content=large_content, token_count=200, step_name="input"))
+        mgr.add_turn(Turn(role="tool", content="small", token_count=100, step_name="search"))
+        # Total=300, 300/350=85.7% => stage 3
+        result = mgr.compact()
+        assert result.stage_applied == MaskingStage.STAGE_3
+        # User turn has large content and is outside window
+        assert mgr.turns[0].masked is True
+        assert "content saved to file" in mgr.turns[0].content
+
+    def test_stage_3_skips_small_content(self) -> None:
+        # Stage 3 only replaces content >= _FILE_POINTER_MIN_CHARS
+        mgr = ContextManager(window_size=1, max_tokens=235)
+        mgr.add_turn(Turn(role="user", content="short", token_count=100, step_name="input"))
+        mgr.add_turn(Turn(role="user", content="next", token_count=100))
+        # Total=200, 200/235=85.1% => stage 3
+        result = mgr.compact()
+        assert result.stage_applied == MaskingStage.STAGE_3
+        # "short" is < _FILE_POINTER_MIN_CHARS, so not replaced
+        assert mgr.turns[0].masked is False
+
+    def test_stage_reports_in_result(self) -> None:
+        mgr = ContextManager(window_size=1, max_tokens=250)
+        mgr.add_turn(Turn(role="tool", content="d", token_count=200, step_name="s-0"))
+        # 200/250 = 80% => stage 2
+        result = mgr.compact()
+        assert result.stage_applied == MaskingStage.STAGE_2
+
+    def test_progressive_activation(self) -> None:
+        """As tokens grow, the stage escalates progressively."""
+        mgr = ContextManager(window_size=1, max_tokens=1000)
+
+        # Add turns incrementally and check stage
+        mgr.add_turn(Turn(role="tool", content="a", token_count=500, step_name="s-0"))
+        assert mgr.active_stage == MaskingStage.NONE  # 50%
+
+        mgr.add_turn(Turn(role="tool", content="b", token_count=260, step_name="s-1"))
+        assert mgr.active_stage == MaskingStage.STAGE_1  # 76%
+
+        # After compaction, stage 1 masks the oldest tool turn
+        result = mgr.compact()
+        assert result.stage_applied == MaskingStage.STAGE_1
 
 
 # ---------------------------------------------------------------------------
@@ -277,13 +475,9 @@ class TestCompactionCooldown:
             max_tokens=50,
             compaction_cooldown_turns=3,
         )
-        # Add a non-tool turn that can't be masked
         mgr.add_turn(Turn(role="user", content="big", token_count=100))
-        # Compaction triggered but nothing to mask, cooldown starts
-        # Add 2 more turns within cooldown period
         mgr.add_turn(Turn(role="user", content="small", token_count=10))
         mgr.add_turn(Turn(role="user", content="small", token_count=10))
-        # All turns should still be unmasked (cooldown in effect)
         assert all(not t.masked for t in mgr.turns)
 
     def test_cooldown_expires_after_threshold(self) -> None:
@@ -292,18 +486,15 @@ class TestCompactionCooldown:
             max_tokens=50,
             compaction_cooldown_turns=2,
         )
-        # First turn triggers compaction with nothing to mask
         mgr.add_turn(Turn(role="user", content="big", token_count=100))
-        # Within cooldown
         mgr.add_turn(Turn(role="tool", content="data", token_count=100, step_name="s1"))
-        # Cooldown expires (2 turns since last compaction)
         mgr.add_turn(Turn(role="tool", content="data2", token_count=100, step_name="s2"))
-        # The oldest tool turn should be masked
         masked = [t for t in mgr.turns if t.masked]
         assert len(masked) >= 1
 
     def test_manual_compact_resets_cooldown(self) -> None:
-        mgr = ContextManager(window_size=2, max_tokens=1_000_000)
+        # 5*100=500; max_tokens=625 => 80% => stage 1
+        mgr = ContextManager(window_size=2, max_tokens=625)
         for i in range(5):
             mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
         result = mgr.compact()
@@ -329,7 +520,7 @@ class TestGetContextWindow:
         assert window[1] == {"role": "assistant", "content": "Hi"}
 
     def test_includes_masked_turns(self) -> None:
-        mgr = ContextManager(window_size=1)
+        mgr = ContextManager(window_size=1, max_tokens=120)
         mgr.add_turn(Turn(role="tool", content="data", token_count=100, step_name="search"))
         mgr.add_turn(Turn(role="user", content="next", token_count=10))
         mgr.compact()
@@ -398,7 +589,9 @@ class TestRealisticConversation:
     """Simulates a realistic research agent conversation."""
 
     def test_mixed_role_conversation(self) -> None:
-        mgr = ContextManager(window_size=4, max_tokens=1_000_000)
+        # Total: 50+20+100+2000+50+1500+200+10 = 3930 tokens
+        # max_tokens=4500 => 87.3% => stage 3
+        mgr = ContextManager(window_size=4, max_tokens=4500)
         turns = [
             Turn(role="system", content="You are a researcher.", token_count=50),
             Turn(role="user", content="Research AI safety", token_count=20),
