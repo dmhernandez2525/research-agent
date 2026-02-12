@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import select
 import shutil
 import signal
 import sys
@@ -24,6 +25,7 @@ from rich.table import Table
 from research_agent import __version__
 from research_agent.checkpoints import CheckpointManager, generate_run_id
 from research_agent.config import Settings, format_validation_error
+from research_agent.plan_editor import edit_plan_in_editor, edit_plan_inline
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -133,13 +135,25 @@ def _display_plan(sub_questions: list[dict[str, Any]]) -> None:
     console.print(table)
 
 
-def _approve_plan() -> str:
+def _approve_plan(timeout_seconds: int = 0) -> str:
     """Prompt user to approve, edit, or cancel the research plan.
+
+    Args:
+        timeout_seconds: If > 0, auto-approve after this many seconds
+            of inactivity. Useful for batch/CI environments.
 
     Returns:
         One of "approve", "edit", or "cancel".
     """
     console.print()
+
+    if timeout_seconds > 0 and sys.stdin.isatty():
+        console.print(f"[dim]Auto-approving in {timeout_seconds}s if no input...[/dim]")
+        ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
+        if not ready:
+            console.print("[green]Auto-approved (timeout).[/green]")
+            return "approve"
+
     choice = typer.prompt(
         "Approve plan? [a]pprove / [e]dit / [c]ancel",
         default="a",
@@ -150,6 +164,72 @@ def _approve_plan() -> str:
     if choice in ("e", "edit"):
         return "edit"
     return "cancel"
+
+
+def _handle_plan_review(
+    sub_questions: list[dict[str, Any]],
+    no_approve: bool = False,
+    approve_timeout: int = 0,
+) -> list[dict[str, Any]] | None:
+    """Run the full plan review workflow.
+
+    Displays the plan table, prompts for approval, and handles the edit
+    flow when requested. Returns the (possibly edited) sub-questions,
+    or None if the user cancelled.
+
+    Args:
+        sub_questions: List of sub-question dicts from the planner.
+        no_approve: If True, skip approval and proceed immediately.
+        approve_timeout: Seconds before auto-approval (0 = no timeout).
+
+    Returns:
+        Final list of sub-question dicts, or None if cancelled.
+    """
+    _display_plan(sub_questions)
+
+    if no_approve:
+        console.print("[dim]Plan auto-approved (--no-approve).[/dim]")
+        return sub_questions
+
+    while True:
+        decision = _approve_plan(timeout_seconds=approve_timeout)
+
+        if decision == "approve":
+            console.print("[green]Plan approved.[/green]")
+            return sub_questions
+
+        if decision == "cancel":
+            console.print("[yellow]Plan cancelled by user.[/yellow]")
+            return None
+
+        # decision == "edit"
+        console.print("[cyan]Opening plan editor...[/cyan]")
+
+        # Try $EDITOR first, fall back to inline editing
+        edited = edit_plan_in_editor(sub_questions)
+        if edited is None:
+            console.print(
+                "[yellow]Editor returned no changes. Trying inline editing...[/yellow]"
+            )
+            edited = edit_plan_inline(sub_questions)
+
+        if edited is None:
+            console.print("[yellow]Edit cancelled. Returning to approval.[/yellow]")
+            continue
+
+        # Update sub_questions with the edited version
+        sub_questions = [
+            {
+                "id": sq.id,
+                "question": sq.question,
+                "rationale": sq.rationale,
+            }
+            for sq in edited.sub_questions
+        ]
+        console.print(
+            f"[green]Plan updated ({len(sub_questions)} sub-questions).[/green]"
+        )
+        _display_plan(sub_questions)
 
 
 def _display_error_with_resume(
@@ -223,6 +303,17 @@ def run(
         float | None,
         typer.Option("--budget", "-b", help="Max cost budget in USD."),
     ] = None,
+    no_approve: Annotated[
+        bool,
+        typer.Option("--no-approve", help="Skip plan approval, run immediately."),
+    ] = False,
+    approve_timeout: Annotated[
+        int,
+        typer.Option(
+            "--approve-timeout",
+            help="Auto-approve plan after N seconds of inactivity (0=disabled).",
+        ),
+    ] = 0,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Enable verbose logging."),
@@ -348,6 +439,10 @@ def resume_cmd(
         Path | None,
         typer.Option("--config", "-c", help="Path to config YAML file."),
     ] = None,
+    no_approve: Annotated[
+        bool,
+        typer.Option("--no-approve", help="Skip plan approval on resume."),
+    ] = False,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Enable verbose logging."),
@@ -404,6 +499,7 @@ def resume_cmd(
         query=query,
         config=config,
         resume_flag=True,
+        no_approve=no_approve,
         verbose=verbose,
         output=None,
         budget=None,
