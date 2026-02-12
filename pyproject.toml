@@ -18,10 +18,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "langchain>=1.0,<2",
+    "litellm>=1.50,<2",
     "langgraph>=1.0,<2",
-    "langchain-anthropic>=1.0,<2",
-    "langchain-openai>=1.0,<2",
     "chromadb>=1.4,<2",
     "httpx>=0.28,<1",
     "trafilatura>=2.0,<3",
@@ -38,7 +36,7 @@ dependencies = [
 [project.optional-dependencies]
 local = ["sentence-transformers>=3.3,<4", "torch>=2.5,<3"]
 pdf = ["pymupdf>=1.25,<2"]
-google = ["langchain-google-genai>=2,<3"]
+google = []
 
 [dependency-groups]
 dev = ["ruff>=0.9,<1", "mypy>=1.14,<2", "pre-commit>=4.0,<5", "types-PyYAML>=6,<7"]
@@ -99,9 +97,7 @@ module = [
     "chromadb.*",
     "tiktoken.*",
     "langgraph.*",
-    "langchain.*",
-    "langchain_anthropic.*",
-    "langchain_openai.*",
+    "litellm.*",
 ]
 ignore_missing_imports = true
 

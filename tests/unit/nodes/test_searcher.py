@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -364,17 +364,16 @@ class TestExpandQueries:
 
     @pytest.mark.asyncio()
     async def test_returns_expanded_queries(self) -> None:
-        mock_result = ExpandedQueries(
-            original="What is RAG?",
-            variations=["RAG overview", "retrieval generation", "RAG examples"],
-        )
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+        import json
 
-        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
-            mock_instance = mock_cls.return_value
-            mock_instance.with_structured_output.return_value = mock_structured
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "original": "What is RAG?",
+            "variations": ["RAG overview", "retrieval generation", "RAG examples"],
+        })
 
+        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
             result = await _expand_queries("What is RAG?")
 
         assert isinstance(result, ExpandedQueries)
@@ -382,76 +381,79 @@ class TestExpandQueries:
 
     @pytest.mark.asyncio()
     async def test_uses_haiku_model(self) -> None:
-        mock_result = ExpandedQueries(
-            original="Q",
-            variations=["a", "b", "c"],
-        )
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+        import json
 
-        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
-            mock_instance = mock_cls.return_value
-            mock_instance.with_structured_output.return_value = mock_structured
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "original": "Q",
+            "variations": ["a", "b", "c"],
+        })
 
+        with patch(
+            "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        ) as mock_call:
             await _expand_queries("Q")
 
-        mock_cls.assert_called_once_with(
-            model="claude-haiku-3-5-20241022",
-            max_tokens=256,
-            temperature=0.7,
-        )
+        call_kwargs = mock_call.call_args[1]
+        assert call_kwargs["model"] == "anthropic/claude-haiku-3-5-20241022"
+        assert call_kwargs["max_tokens"] == 256
+        assert call_kwargs["temperature"] == 0.7
 
     @pytest.mark.asyncio()
     async def test_passes_system_prompt(self) -> None:
-        mock_result = ExpandedQueries(
-            original="Q",
-            variations=["a", "b", "c"],
-        )
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+        import json
 
-        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
-            mock_instance = mock_cls.return_value
-            mock_instance.with_structured_output.return_value = mock_structured
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "original": "Q",
+            "variations": ["a", "b", "c"],
+        })
 
+        with patch(
+            "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        ) as mock_call:
             await _expand_queries("my question")
 
-        # Verify the messages passed to ainvoke
-        call_args = mock_structured.ainvoke.call_args
-        messages = call_args[0][0]
+        call_kwargs = mock_call.call_args[1]
+        messages = call_kwargs["messages"]
         assert messages[0]["role"] == "system"
         assert "search query expansion" in messages[0]["content"].lower()
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "my question"
 
     @pytest.mark.asyncio()
-    async def test_uses_structured_output(self) -> None:
-        mock_result = ExpandedQueries(
-            original="Q",
-            variations=["a", "b", "c"],
-        )
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+    async def test_includes_json_instruction_in_system(self) -> None:
+        import json
 
-        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
-            mock_instance = mock_cls.return_value
-            mock_instance.with_structured_output.return_value = mock_structured
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "original": "Q",
+            "variations": ["a", "b", "c"],
+        })
 
+        with patch(
+            "litellm.acompletion", new_callable=AsyncMock, return_value=mock_response
+        ) as mock_call:
             await _expand_queries("Q")
 
-        mock_instance.with_structured_output.assert_called_once_with(ExpandedQueries)
+        call_kwargs = mock_call.call_args[1]
+        system_content = call_kwargs["messages"][0]["content"]
+        assert "JSON" in system_content
 
     @pytest.mark.asyncio()
     async def test_propagates_llm_error(self) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(side_effect=RuntimeError("LLM down"))
-
-        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
-            mock_instance = mock_cls.return_value
-            mock_instance.with_structured_output.return_value = mock_structured
-
-            with pytest.raises(RuntimeError, match="LLM down"):
-                await _expand_queries("Q")
+        with (
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("LLM down"),
+            ),
+            pytest.raises(RuntimeError, match="LLM down"),
+        ):
+            await _expand_queries("Q")
 
 
 # ---- execute_search ----------------------------------------------------------

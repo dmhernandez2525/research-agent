@@ -130,6 +130,12 @@ class ExpandedQueries(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_EXPAND_JSON_INSTRUCTION = (
+    "\n\nRespond with ONLY a JSON object in this format: "
+    '{"original": "<the question>", "variations": ["query1", "query2", "query3"]}'
+)
+
+
 async def _expand_queries(question: str) -> ExpandedQueries:
     """Use an LLM to expand a sub-question into 3 search query variations.
 
@@ -145,20 +151,24 @@ async def _expand_queries(question: str) -> ExpandedQueries:
     Raises:
         Exception: Re-raises any LLM error so the caller can handle fallback.
     """
-    from langchain_anthropic import ChatAnthropic
+    import litellm
 
-    model = ChatAnthropic(
-        model="claude-haiku-3-5-20241022",
+    from research_agent.models import _extract_json
+
+    response = await litellm.acompletion(
+        model="anthropic/claude-haiku-3-5-20241022",
+        messages=[
+            {"role": "system", "content": _EXPAND_SYSTEM_PROMPT + _EXPAND_JSON_INSTRUCTION},
+            {"role": "user", "content": question},
+        ],
         max_tokens=256,
         temperature=0.7,
     )
-    structured = model.with_structured_output(ExpandedQueries)
-    result = await structured.ainvoke(
-        [
-            {"role": "system", "content": _EXPAND_SYSTEM_PROMPT},
-            {"role": "user", "content": question},
-        ]
-    )
+
+    content = response.choices[0].message.content
+    data = _extract_json(content)
+    result = ExpandedQueries(**data)
+
     logger.info(
         "expand_queries_ok",
         original=question,
@@ -201,7 +211,8 @@ async def _tavily_search_with_retry(
         max_results=max_results,
         search_depth=search_depth,
     )
-    return response.get("results", [])
+    results: list[dict[str, Any]] = response.get("results", [])
+    return results
 
 
 def _parse_results(

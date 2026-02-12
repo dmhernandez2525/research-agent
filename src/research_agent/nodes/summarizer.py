@@ -62,7 +62,8 @@ def _load_prompt() -> dict[str, str]:
 
     path = _PROMPTS_DIR / "summarizer.yaml"
     with path.open() as f:
-        return yaml.safe_load(f)
+        result: dict[str, str] = yaml.safe_load(f)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,14 @@ def _build_content_block(items: list[ScrapedContent]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+_SUMMARIZER_JSON_INSTRUCTION = (
+    "\n\nRespond with ONLY a JSON object in this format: "
+    '{"summary": "<200-500 word summary>", '
+    '"key_findings": ["finding1", "finding2", "finding3"], '
+    '"disagreements": "<notable disagreements or gaps>"}'
+)
+
+
 async def _summarize_group(
     sub_question_id: int,
     sub_question_text: str,
@@ -124,16 +133,11 @@ async def _summarize_group(
     Returns:
         A ``Summary`` model with the compressed text and findings.
     """
-    from langchain_anthropic import ChatAnthropic
+    import litellm
+
+    from research_agent.models import _extract_json
 
     prompt_templates = _load_prompt()
-
-    model = ChatAnthropic(
-        model="claude-sonnet-4-5-20250929",
-        max_tokens=4096,
-        temperature=0.1,
-    )
-    structured = model.with_structured_output(SummarizerOutput)
 
     content_block = _build_content_block(content_items)
     user_prompt = prompt_templates["user"].format(
@@ -142,12 +146,21 @@ async def _summarize_group(
         content=content_block,
     )
 
-    result = await structured.ainvoke(
-        [
-            {"role": "system", "content": prompt_templates["system"]},
+    system_prompt = prompt_templates["system"] + _SUMMARIZER_JSON_INSTRUCTION
+
+    response = await litellm.acompletion(
+        model="anthropic/claude-sonnet-4-5-20250929",
+        messages=[
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ]
+        ],
+        max_tokens=4096,
+        temperature=0.1,
     )
+
+    content = response.choices[0].message.content
+    data = _extract_json(content)
+    result = SummarizerOutput(**data)
 
     source_urls = list({item.url for item in content_items})
 

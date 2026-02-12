@@ -198,20 +198,33 @@ class TestSummarizerOutput:
 class TestSummarizeGroup:
     """_summarize_group calls the LLM and returns a Summary model."""
 
+    def _make_mock_response(self, summarizer_result: SummarizerOutput) -> MagicMock:
+        """Build a mock litellm response from a SummarizerOutput."""
+        import json
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "summary": summarizer_result.summary,
+            "key_findings": summarizer_result.key_findings,
+            "disagreements": summarizer_result.disagreements,
+        })
+        return mock_response
+
     @pytest.mark.asyncio()
     async def test_returns_summary_model(
         self,
         scraped_items: list[ScrapedContent],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_summarizer_result)
-
-        mock_model = MagicMock()
-        mock_model.with_structured_output.return_value = mock_structured
+        mock_response = self._make_mock_response(mock_summarizer_result)
 
         with (
-            patch("langchain_anthropic.ChatAnthropic", return_value=mock_model),
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
             patch("research_agent.nodes.summarizer._load_prompt") as mock_prompt,
         ):
             mock_prompt.return_value = {
@@ -232,14 +245,14 @@ class TestSummarizeGroup:
         scraped_items: list[ScrapedContent],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_summarizer_result)
-
-        mock_model = MagicMock()
-        mock_model.with_structured_output.return_value = mock_structured
+        mock_response = self._make_mock_response(mock_summarizer_result)
 
         with (
-            patch("langchain_anthropic.ChatAnthropic", return_value=mock_model),
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
             patch("research_agent.nodes.summarizer._load_prompt") as mock_prompt,
         ):
             mock_prompt.return_value = {
@@ -256,14 +269,14 @@ class TestSummarizeGroup:
         scraped_items: list[ScrapedContent],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_summarizer_result)
-
-        mock_model = MagicMock()
-        mock_model.with_structured_output.return_value = mock_structured
+        mock_response = self._make_mock_response(mock_summarizer_result)
 
         with (
-            patch("langchain_anthropic.ChatAnthropic", return_value=mock_model),
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_call,
             patch("research_agent.nodes.summarizer._load_prompt") as mock_prompt,
         ):
             mock_prompt.return_value = {
@@ -272,10 +285,11 @@ class TestSummarizeGroup:
             }
             await _summarize_group(1, "What is topic A?", scraped_items[:2])
 
-        call_args = mock_structured.ainvoke.call_args[0][0]
-        assert call_args[0]["role"] == "system"
-        assert call_args[1]["role"] == "user"
-        assert "What is topic A?" in call_args[1]["content"]
+        call_kwargs = mock_call.call_args[1]
+        messages = call_kwargs["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert "What is topic A?" in messages[1]["content"]
 
     @pytest.mark.asyncio()
     async def test_uses_smart_tier_model(
@@ -283,16 +297,14 @@ class TestSummarizeGroup:
         scraped_items: list[ScrapedContent],
         mock_summarizer_result: SummarizerOutput,
     ) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_summarizer_result)
-
-        mock_model = MagicMock()
-        mock_model.with_structured_output.return_value = mock_structured
+        mock_response = self._make_mock_response(mock_summarizer_result)
 
         with (
             patch(
-                "langchain_anthropic.ChatAnthropic", return_value=mock_model
-            ) as mock_cls,
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_call,
             patch("research_agent.nodes.summarizer._load_prompt") as mock_prompt,
         ):
             mock_prompt.return_value = {
@@ -301,7 +313,7 @@ class TestSummarizeGroup:
             }
             await _summarize_group(1, "Question?", scraped_items[:1])
 
-        call_kwargs = mock_cls.call_args[1]
+        call_kwargs = mock_call.call_args[1]
         assert "sonnet" in call_kwargs["model"]
 
 

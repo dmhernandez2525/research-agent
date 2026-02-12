@@ -61,7 +61,8 @@ def _load_prompt() -> dict[str, str]:
 
     path = _PROMPTS_DIR / "synthesizer.yaml"
     with path.open() as f:
-        return yaml.safe_load(f)
+        result: dict[str, str] = yaml.safe_load(f)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +226,14 @@ def _has_sources_section(report: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_SYNTHESIZER_JSON_INSTRUCTION = (
+    "\n\nRespond with ONLY a JSON object in this format: "
+    '{"title": "<report title>", '
+    '"report": "<full markdown report body>", '
+    '"sources": [{"url": "<url>", "title": "<title>"}]}'
+)
+
+
 async def _synthesize_report(
     query: str,
     context: str,
@@ -243,33 +252,32 @@ async def _synthesize_report(
     Returns:
         A ``SynthesisOutput`` with the report and source list.
     """
-    from langchain_anthropic import ChatAnthropic
+    import litellm
+
+    from research_agent.models import _extract_json
 
     prompt_templates = _load_prompt()
 
-    model = ChatAnthropic(
-        model="claude-sonnet-4-5-20250929",
-        max_tokens=8192,
-        temperature=0.1,
-    )
-    structured = model.with_structured_output(SynthesisOutput)
-
-    system_prompt = prompt_templates["system"]
+    system_prompt = prompt_templates["system"] + _SYNTHESIZER_JSON_INSTRUCTION
     user_prompt = prompt_templates["user"].format(
         query=query,
         context=context,
     )
-    # Add max_length guidance
     user_prompt += f"\n\nTarget maximum length: {max_length} words."
 
-    result = await structured.ainvoke(
-        [
+    response = await litellm.acompletion(
+        model="anthropic/claude-sonnet-4-5-20250929",
+        messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ]
+        ],
+        max_tokens=8192,
+        temperature=0.1,
     )
 
-    return result
+    content = response.choices[0].message.content
+    data = _extract_json(content)
+    return SynthesisOutput(**data)
 
 
 # ---------------------------------------------------------------------------
