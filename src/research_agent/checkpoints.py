@@ -264,6 +264,68 @@ class CheckpointManager:
                 logger.warning("corrupt_metadata", path=str(meta_path))
         return metas
 
+    def recover_checkpoint(self) -> dict[str, Any] | None:
+        """Find and load the latest valid checkpoint, quarantining corrupted ones.
+
+        Iterates through checkpoints from newest to oldest. If a checkpoint
+        fails integrity verification, it is moved to the quarantine directory.
+        Returns the first valid checkpoint state, or ``None`` if no valid
+        checkpoints exist (fresh start).
+
+        Returns:
+            The deserialized state dict from the latest valid checkpoint,
+            or ``None`` if recovery is not possible.
+        """
+        checkpoints = self.list_checkpoints()
+        if not checkpoints:
+            logger.info("recovery_fresh_start", reason="no checkpoints found")
+            return None
+
+        for meta in checkpoints:
+            try:
+                state = self.load(meta.checkpoint_id)
+                logger.info(
+                    "recovery_success", checkpoint_id=meta.checkpoint_id
+                )
+                return state
+            except CheckpointCorruptionError:
+                logger.warning(
+                    "recovery_quarantine",
+                    checkpoint_id=meta.checkpoint_id,
+                )
+                self._quarantine(meta.checkpoint_id)
+            except CheckpointError:
+                logger.warning(
+                    "recovery_skip_missing",
+                    checkpoint_id=meta.checkpoint_id,
+                )
+
+        logger.info("recovery_fresh_start", reason="all checkpoints corrupt")
+        return None
+
+    def _quarantine(self, checkpoint_id: str) -> None:
+        """Move a corrupt checkpoint to the quarantine directory.
+
+        Args:
+            checkpoint_id: ID of the checkpoint to quarantine.
+        """
+        quarantine_dir = self.directory / "quarantine"
+        quarantine_dir.mkdir(exist_ok=True)
+
+        for path in (
+            self._checkpoint_path(checkpoint_id),
+            self._metadata_path(checkpoint_id),
+        ):
+            if path.exists():
+                dest = quarantine_dir / path.name
+                shutil.move(str(path), str(dest))
+
+        logger.info(
+            "checkpoint_quarantined",
+            checkpoint_id=checkpoint_id,
+            quarantine_dir=str(quarantine_dir),
+        )
+
     def _rotate(self) -> None:
         """Remove oldest checkpoints exceeding ``max_checkpoints``.
 

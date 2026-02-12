@@ -263,3 +263,79 @@ class TestCheckpointIdForStep:
         mgr.save(cp_id, {"step": 5})
         loaded = mgr.load(cp_id)
         assert loaded["step"] == 5
+
+
+# ---- Recovery ----------------------------------------------------------------
+
+
+class TestRecoverCheckpoint:
+    """recover_checkpoint finds the latest valid checkpoint."""
+
+    def test_recovers_latest_valid(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path, max_checkpoints=10)
+        mgr.save("cp-001", {"step": 1})
+        time.sleep(0.02)
+        mgr.save("cp-002", {"step": 2})
+        state = mgr.recover_checkpoint()
+        assert state is not None
+        assert state["step"] == 2
+
+    def test_skips_corrupted_recovers_older(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path, max_checkpoints=10)
+        mgr.save("cp-001", {"step": 1})
+        time.sleep(0.02)
+        mgr.save("cp-002", {"step": 2})
+        # Corrupt the newest checkpoint
+        (tmp_path / "cp-002.json").write_text("CORRUPTED")
+        state = mgr.recover_checkpoint()
+        assert state is not None
+        assert state["step"] == 1
+
+    def test_quarantines_corrupted(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path, max_checkpoints=10)
+        mgr.save("cp-001", {"step": 1})
+        (tmp_path / "cp-001.json").write_text("CORRUPTED")
+        mgr.recover_checkpoint()
+        quarantine = tmp_path / "quarantine"
+        assert quarantine.exists()
+        assert (quarantine / "cp-001.json").exists()
+        assert (quarantine / "cp-001.meta.json").exists()
+
+    def test_returns_none_when_empty(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path)
+        assert mgr.recover_checkpoint() is None
+
+    def test_returns_none_all_corrupted(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path, max_checkpoints=10)
+        mgr.save("cp-001", {"step": 1})
+        mgr.save("cp-002", {"step": 2})
+        (tmp_path / "cp-001.json").write_text("BAD")
+        (tmp_path / "cp-002.json").write_text("BAD")
+        assert mgr.recover_checkpoint() is None
+
+
+# ---- Quarantine --------------------------------------------------------------
+
+
+class TestQuarantine:
+    """_quarantine moves corrupt files to quarantine directory."""
+
+    def test_creates_quarantine_dir(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path)
+        mgr.save("cp-001", {"step": 1})
+        mgr._quarantine("cp-001")
+        assert (tmp_path / "quarantine").is_dir()
+
+    def test_moves_both_files(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path)
+        mgr.save("cp-001", {"step": 1})
+        mgr._quarantine("cp-001")
+        assert not (tmp_path / "cp-001.json").exists()
+        assert not (tmp_path / "cp-001.meta.json").exists()
+        assert (tmp_path / "quarantine" / "cp-001.json").exists()
+        assert (tmp_path / "quarantine" / "cp-001.meta.json").exists()
+
+    def test_handles_missing_files(self, tmp_path: Path) -> None:
+        mgr = CheckpointManager(directory=tmp_path)
+        # Should not raise even if files don't exist
+        mgr._quarantine("nonexistent")
