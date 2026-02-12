@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +23,17 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+_TRASH_DIR = os.path.expanduser("~/.Trash")
+
+
+def generate_run_id() -> str:
+    """Generate a unique run ID for checkpoint scoping.
+
+    Returns:
+        A short, filesystem-safe unique identifier.
+    """
+    return f"run-{uuid.uuid4().hex[:12]}"
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +265,7 @@ class CheckpointManager:
             meta_path = self._metadata_path(old.checkpoint_id)
             for path in (cp_path, meta_path):
                 if path.exists():
-                    path.unlink()
+                    shutil.move(str(path), os.path.join(_TRASH_DIR, path.name))
             logger.debug("checkpoint_rotated", checkpoint_id=old.checkpoint_id)
 
     @staticmethod
@@ -275,5 +288,7 @@ class CheckpointManager:
             if not fd_closed:
                 os.close(fd)
             if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+                shutil.move(
+                    tmp_path, os.path.join(_TRASH_DIR, os.path.basename(tmp_path))
+                )
             raise
