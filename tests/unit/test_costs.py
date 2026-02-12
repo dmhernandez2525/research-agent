@@ -6,13 +6,13 @@ import pytest
 
 from research_agent.costs import (
     MODEL_PRICING,
-    BudgetExhaustedError,
     BudgetStatus,
     BudgetTracker,
     DegradationManager,
     DegradationTier,
     LLMCallRecord,
 )
+from research_agent.exceptions import BudgetExhaustedError
 
 # ---------------------------------------------------------------------------
 # TestLLMCallRecord

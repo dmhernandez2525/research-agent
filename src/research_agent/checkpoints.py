@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import BaseModel, Field
 
+from research_agent.exceptions import CheckpointCorruptionError, CheckpointError
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -84,14 +86,6 @@ def migrate_state(state: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
-
-
-class CheckpointError(Exception):
-    """Base exception for checkpoint operations."""
-
-
-class CheckpointCorruptionError(CheckpointError):
-    """Raised when a checkpoint fails integrity verification."""
 
 
 # ---------------------------------------------------------------------------

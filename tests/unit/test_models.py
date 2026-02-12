@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from tenacity import RetryError
 
+from research_agent.exceptions import ModelRoutingError
 from research_agent.models import (
     DEFAULT_CHAINS,
     NODE_TIER_MAP,
     ModelRouter,
-    ModelRoutingError,
     ModelSpec,
     ModelTier,
     _create_chat_model,

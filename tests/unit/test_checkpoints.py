@@ -10,14 +10,13 @@ import pytest
 
 from research_agent.checkpoints import (
     _CURRENT_SCHEMA_VERSION,
-    CheckpointCorruptionError,
-    CheckpointError,
     CheckpointManager,
     CheckpointMetadata,
     checkpoint_id_for_step,
     generate_run_id,
     migrate_state,
 )
+from research_agent.exceptions import CheckpointCorruptionError, CheckpointError
 
 if TYPE_CHECKING:
     from pathlib import Path
