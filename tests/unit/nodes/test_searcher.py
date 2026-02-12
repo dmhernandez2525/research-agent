@@ -1,4 +1,4 @@
-"""Unit tests for research_agent.nodes.searcher - Tavily search integration."""
+"""Unit tests for research_agent.nodes.searcher - Tavily search with ExpandSearch."""
 
 from __future__ import annotations
 
@@ -8,8 +8,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from research_agent.nodes.searcher import (
+    _EXPAND_SYSTEM_PROMPT,
     _MIN_RELEVANCE_SCORE,
+    ExpandedQueries,
     _deduplicate_results,
+    _expand_queries,
     _parse_results,
     execute_search,
     search_node,
@@ -42,6 +45,30 @@ def tavily_response() -> list[dict[str, Any]]:
             "score": 0.15,
         },
     ]
+
+
+@pytest.fixture()
+def mock_expanded() -> ExpandedQueries:
+    """A mock ExpandedQueries result."""
+    return ExpandedQueries(
+        original="What is RAG?",
+        variations=[
+            "retrieval augmented generation overview",
+            "RAG architecture LLM search",
+            "RAG vs fine-tuning comparison examples",
+        ],
+    )
+
+
+@pytest.fixture()
+def _patch_expand(mock_expanded: ExpandedQueries) -> Any:
+    """Patch _expand_queries to return mock_expanded for all search_node tests."""
+    with patch(
+        "research_agent.nodes.searcher._expand_queries",
+        new_callable=AsyncMock,
+        return_value=mock_expanded,
+    ):
+        yield
 
 
 # ---- _parse_results ----------------------------------------------------------
@@ -142,6 +169,131 @@ class TestDeduplicateResults:
         ]
 
 
+# ---- ExpandedQueries model --------------------------------------------------
+
+
+class TestExpandedQueriesModel:
+    """Pydantic model validation for ExpandedQueries."""
+
+    def test_valid_three_variations(self) -> None:
+        eq = ExpandedQueries(
+            original="What is RAG?",
+            variations=["query 1", "query 2", "query 3"],
+        )
+        assert len(eq.variations) == 3
+        assert eq.original == "What is RAG?"
+
+    def test_rejects_fewer_than_three(self) -> None:
+        with pytest.raises(ValueError, match="too_short"):
+            ExpandedQueries(original="Q", variations=["a", "b"])
+
+    def test_rejects_more_than_three(self) -> None:
+        with pytest.raises(ValueError, match="too_long"):
+            ExpandedQueries(original="Q", variations=["a", "b", "c", "d"])
+
+    def test_system_prompt_exists(self) -> None:
+        assert len(_EXPAND_SYSTEM_PROMPT) > 50
+        assert "3" in _EXPAND_SYSTEM_PROMPT or "three" in _EXPAND_SYSTEM_PROMPT.lower()
+
+
+# ---- _expand_queries ---------------------------------------------------------
+
+
+class TestExpandQueries:
+    """LLM-powered query expansion function."""
+
+    @pytest.mark.asyncio()
+    async def test_returns_expanded_queries(self) -> None:
+        mock_result = ExpandedQueries(
+            original="What is RAG?",
+            variations=["RAG overview", "retrieval generation", "RAG examples"],
+        )
+        mock_structured = AsyncMock()
+        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+
+        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
+            mock_instance = mock_cls.return_value
+            mock_instance.with_structured_output.return_value = mock_structured
+
+            result = await _expand_queries("What is RAG?")
+
+        assert isinstance(result, ExpandedQueries)
+        assert len(result.variations) == 3
+
+    @pytest.mark.asyncio()
+    async def test_uses_haiku_model(self) -> None:
+        mock_result = ExpandedQueries(
+            original="Q",
+            variations=["a", "b", "c"],
+        )
+        mock_structured = AsyncMock()
+        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+
+        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
+            mock_instance = mock_cls.return_value
+            mock_instance.with_structured_output.return_value = mock_structured
+
+            await _expand_queries("Q")
+
+        mock_cls.assert_called_once_with(
+            model="claude-haiku-3-5-20241022",
+            max_tokens=256,
+            temperature=0.7,
+        )
+
+    @pytest.mark.asyncio()
+    async def test_passes_system_prompt(self) -> None:
+        mock_result = ExpandedQueries(
+            original="Q",
+            variations=["a", "b", "c"],
+        )
+        mock_structured = AsyncMock()
+        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+
+        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
+            mock_instance = mock_cls.return_value
+            mock_instance.with_structured_output.return_value = mock_structured
+
+            await _expand_queries("my question")
+
+        # Verify the messages passed to ainvoke
+        call_args = mock_structured.ainvoke.call_args
+        messages = call_args[0][0]
+        assert messages[0]["role"] == "system"
+        assert "search query expansion" in messages[0]["content"].lower()
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == "my question"
+
+    @pytest.mark.asyncio()
+    async def test_uses_structured_output(self) -> None:
+        mock_result = ExpandedQueries(
+            original="Q",
+            variations=["a", "b", "c"],
+        )
+        mock_structured = AsyncMock()
+        mock_structured.ainvoke = AsyncMock(return_value=mock_result)
+
+        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
+            mock_instance = mock_cls.return_value
+            mock_instance.with_structured_output.return_value = mock_structured
+
+            await _expand_queries("Q")
+
+        mock_instance.with_structured_output.assert_called_once_with(ExpandedQueries)
+
+    @pytest.mark.asyncio()
+    async def test_propagates_llm_error(self) -> None:
+        mock_structured = AsyncMock()
+        mock_structured.ainvoke = AsyncMock(side_effect=RuntimeError("LLM down"))
+
+        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
+            mock_instance = mock_cls.return_value
+            mock_instance.with_structured_output.return_value = mock_structured
+
+            with pytest.raises(RuntimeError, match="LLM down"):
+                await _expand_queries("Q")
+
+
 # ---- execute_search ----------------------------------------------------------
 
 
@@ -194,8 +346,9 @@ class TestExecuteSearch:
 # ---- search_node -------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_patch_expand")
 class TestSearchNode:
-    """The search_node graph function."""
+    """The search_node graph function (with mocked query expansion)."""
 
     @pytest.mark.asyncio()
     async def test_returns_empty_when_no_sub_questions(self) -> None:
@@ -218,7 +371,7 @@ class TestSearchNode:
         assert result["search_results"] == []
 
     @pytest.mark.asyncio()
-    async def test_searches_current_subtopic(
+    async def test_searches_with_expanded_queries(
         self, tavily_response: list[dict[str, Any]]
     ) -> None:
         state: dict[str, Any] = {
@@ -229,15 +382,40 @@ class TestSearchNode:
             "current_subtopic_index": 0,
             "seen_urls": [],
         }
+        tavily_mock = AsyncMock(return_value=tavily_response)
         with patch(
             "research_agent.nodes.searcher._tavily_search_with_retry",
-            new_callable=AsyncMock,
-            return_value=tavily_response,
+            tavily_mock,
         ):
             result = await search_node(state)
 
-        assert len(result["search_results"]) == 2
+        # Should have called tavily for each of the 3 expanded queries
+        assert tavily_mock.call_count == 3
+        assert len(result["search_results"]) > 0
         assert all(r.sub_question_id == 1 for r in result["search_results"])
+
+    @pytest.mark.asyncio()
+    async def test_deduplicates_across_variations(self) -> None:
+        """Results from different query variations with same URL get deduped."""
+        state: dict[str, Any] = {
+            "sub_questions": [{"id": 1, "question": "Q1"}],
+            "current_subtopic_index": 0,
+            "seen_urls": [],
+        }
+        # Same URL returned by all 3 variations
+        shared_result = [
+            {"url": "https://a.com", "title": "A", "content": "C", "score": 0.9}
+        ]
+        with patch(
+            "research_agent.nodes.searcher._tavily_search_with_retry",
+            new_callable=AsyncMock,
+            return_value=shared_result,
+        ):
+            result = await search_node(state)
+
+        # Should only appear once despite 3 variations returning it
+        urls = [r.url for r in result["search_results"]]
+        assert urls.count("https://a.com") == 1
 
     @pytest.mark.asyncio()
     async def test_filters_seen_urls(
@@ -255,10 +433,8 @@ class TestSearchNode:
         ):
             result = await search_node(state)
 
-        # Should filter out the already-seen URL
         urls = [r.url for r in result["search_results"]]
         assert "https://example.com/rag-intro" not in urls
-        assert len(result["search_results"]) == 1
 
     @pytest.mark.asyncio()
     async def test_returns_new_urls_for_accumulation(
@@ -333,6 +509,116 @@ class TestSearchNode:
             result = await search_node(state)
 
         assert result["search_results"][0].sub_question_id == 3
+
+
+# ---- search_node expansion fallback ------------------------------------------
+
+
+class TestSearchNodeExpansionFallback:
+    """Tests for search_node when query expansion fails."""
+
+    @pytest.mark.asyncio()
+    async def test_falls_back_to_original_on_expansion_failure(self) -> None:
+        state: dict[str, Any] = {
+            "sub_questions": [{"id": 1, "question": "What is RAG?"}],
+            "current_subtopic_index": 0,
+            "seen_urls": [],
+        }
+        mock_response = [
+            {"url": "https://a.com", "title": "A", "content": "C", "score": 0.9}
+        ]
+        with (
+            patch(
+                "research_agent.nodes.searcher._expand_queries",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("LLM down"),
+            ),
+            patch(
+                "research_agent.nodes.searcher._tavily_search_with_retry",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as tavily_mock,
+        ):
+            result = await search_node(state)
+
+        # Should search with original question only (1 call, not 3)
+        tavily_mock.assert_called_once()
+        assert len(result["search_results"]) == 1
+
+    @pytest.mark.asyncio()
+    async def test_fallback_uses_original_question_text(self) -> None:
+        state: dict[str, Any] = {
+            "sub_questions": [{"id": 1, "question": "specific question text"}],
+            "current_subtopic_index": 0,
+            "seen_urls": [],
+        }
+        with (
+            patch(
+                "research_agent.nodes.searcher._expand_queries",
+                new_callable=AsyncMock,
+                side_effect=ValueError("parse error"),
+            ),
+            patch(
+                "research_agent.nodes.searcher._tavily_search_with_retry",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as tavily_mock,
+        ):
+            await search_node(state)
+
+        # The query passed to tavily should be the original question
+        call_kwargs = tavily_mock.call_args[1]
+        assert call_kwargs["query"] == "specific question text"
+
+    @pytest.mark.asyncio()
+    async def test_expansion_failure_still_returns_valid_state(self) -> None:
+        state: dict[str, Any] = {
+            "sub_questions": [{"id": 1, "question": "Q"}],
+            "current_subtopic_index": 0,
+            "seen_urls": [],
+        }
+        with (
+            patch(
+                "research_agent.nodes.searcher._expand_queries",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("slow LLM"),
+            ),
+            patch(
+                "research_agent.nodes.searcher._tavily_search_with_retry",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            result = await search_node(state)
+
+        assert "search_results" in result
+        assert "seen_urls" in result
+        assert result["step"] == "search"
+        assert result["step_index"] == 1
+
+    @pytest.mark.asyncio()
+    async def test_both_expansion_and_search_fail_gracefully(self) -> None:
+        state: dict[str, Any] = {
+            "sub_questions": [{"id": 1, "question": "Q"}],
+            "current_subtopic_index": 0,
+            "seen_urls": [],
+        }
+        with (
+            patch(
+                "research_agent.nodes.searcher._expand_queries",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("LLM down"),
+            ),
+            patch(
+                "research_agent.nodes.searcher._tavily_search_with_retry",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("API down"),
+            ),
+        ):
+            result = await search_node(state)
+
+        assert result["search_results"] == []
+        assert result["step"] == "search"
 
 
 # ---- Retry behavior ---------------------------------------------------------
