@@ -10,6 +10,11 @@ from research_agent.scraping.paywall import (
 )
 from research_agent.scraping.quality import ContentQualityScorer, QualityMetrics
 from research_agent.scraping.sanitizer import HTMLSanitizer, SanitizationResult
+from research_agent.scraping.structured import (
+    StructuredDataExtractor,
+    StructuredDataItem,
+    StructuredDataResult,
+)
 
 __all__ = [
     "ContentQualityScorer",
@@ -21,4 +26,7 @@ __all__ = [
     "PaywallSignal",
     "QualityMetrics",
     "SanitizationResult",
+    "StructuredDataExtractor",
+    "StructuredDataItem",
+    "StructuredDataResult",
 ]
