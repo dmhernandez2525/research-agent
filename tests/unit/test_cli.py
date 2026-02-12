@@ -7,15 +7,19 @@ from unittest.mock import MagicMock, patch
 
 import click
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from research_agent import __version__
 from research_agent.cli import (
+    _approve_plan,
     _create_progress,
     _display_error_with_resume,
     _display_plan,
+    _handle_plan_review,
     _handle_sigint,
     app,
+    main,
 )
 
 if TYPE_CHECKING:
@@ -536,3 +540,295 @@ class TestErrorDisplay:
     def test_error_display_without_run_id(self) -> None:
         exc = RuntimeError("Something failed")
         _display_error_with_resume(exc, run_id=None)
+
+
+# ---- Handle plan review edit flow -------------------------------------------
+
+
+class TestHandlePlanReviewEdit:
+    """Test the edit flow in _handle_plan_review (lines 206-232)."""
+
+    def test_edit_then_approve(self) -> None:
+        """When user chooses 'edit' then 'approve', the edited subtopics are
+        returned after being processed by edit_plan_in_editor."""
+        from research_agent.plan_editor import EditableSubQuestion, EditedPlan
+
+        subtopics = [
+            {"id": 1, "question": "What is RAG?", "rationale": "Core concept"},
+        ]
+        edited_plan = EditedPlan(
+            subtopics=[
+                EditableSubQuestion(
+                    id=1, question="What is RAG architecture?", rationale="Updated"
+                ),
+                EditableSubQuestion(
+                    id=2, question="New subtopic", rationale="Added"
+                ),
+            ]
+        )
+
+        with (
+            patch(
+                "research_agent.cli._approve_plan", side_effect=["edit", "approve"]
+            ),
+            patch(
+                "research_agent.cli.edit_plan_in_editor", return_value=edited_plan
+            ),
+        ):
+            result = _handle_plan_review(subtopics)
+
+        assert result is not None
+        assert len(result) == 2
+        assert result[0]["question"] == "What is RAG architecture?"
+        assert result[1]["question"] == "New subtopic"
+
+    def test_edit_editor_fails_falls_back_to_inline(self) -> None:
+        """When edit_plan_in_editor returns None, fall back to edit_plan_inline."""
+        from research_agent.plan_editor import EditableSubQuestion, EditedPlan
+
+        subtopics = [
+            {"id": 1, "question": "What is RAG?", "rationale": "Core concept"},
+        ]
+        inline_plan = EditedPlan(
+            subtopics=[
+                EditableSubQuestion(
+                    id=1, question="Inline edited question", rationale="Inline"
+                ),
+            ]
+        )
+
+        with (
+            patch(
+                "research_agent.cli._approve_plan", side_effect=["edit", "approve"]
+            ),
+            patch("research_agent.cli.edit_plan_in_editor", return_value=None),
+            patch("research_agent.cli.edit_plan_inline", return_value=inline_plan),
+        ):
+            result = _handle_plan_review(subtopics)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["question"] == "Inline edited question"
+
+    def test_edit_both_fail_returns_to_approval(self) -> None:
+        """When both editors return None, the loop continues and
+        the user can cancel."""
+        subtopics = [
+            {"id": 1, "question": "What is RAG?", "rationale": "Core concept"},
+        ]
+
+        with (
+            patch(
+                "research_agent.cli._approve_plan", side_effect=["edit", "cancel"]
+            ),
+            patch("research_agent.cli.edit_plan_in_editor", return_value=None),
+            patch("research_agent.cli.edit_plan_inline", return_value=None),
+        ):
+            result = _handle_plan_review(subtopics)
+
+        assert result is None
+
+
+# ---- Approve plan timeout ---------------------------------------------------
+
+
+class TestApprovePlanTimeout:
+    """Test timeout-based auto-approval (lines 151-155)."""
+
+    def test_auto_approve_on_timeout(self) -> None:
+        """When stdin is a tty and select returns no ready input,
+        _approve_plan auto-approves."""
+        with (
+            patch("research_agent.cli.sys.stdin") as mock_stdin,
+            patch("research_agent.cli.select.select", return_value=([], [], [])),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = _approve_plan(timeout_seconds=5)
+
+        assert result == "approve"
+
+
+# ---- Run command output path ------------------------------------------------
+
+
+class TestRunCommandOutputPath:
+    """Test report file writing (lines 407-411)."""
+
+    @patch("research_agent.graph.compile_graph")
+    @patch("research_agent.cli._load_settings")
+    def test_run_writes_report_to_output_dir(
+        self, mock_settings: MagicMock, mock_compile: MagicMock, tmp_path: Path
+    ) -> None:
+        """When _current_state has a non-empty final_report after the pipeline
+        loop, the report is written to the output directory."""
+        import research_agent.cli as cli_mod
+
+        settings = MagicMock()
+        settings.checkpoints.directory = tmp_path / "cp"
+        settings.checkpoints.max_checkpoints = 5
+        settings.report.output_dir = str(tmp_path / "reports")
+        mock_settings.return_value = settings
+
+        # Make compile_graph return a mock, then patch _current_state
+        # to have a final_report after the progress loop runs.
+        mock_compile.return_value = MagicMock()
+
+        out_dir = tmp_path / "output"
+
+        # We need to inject a final_report into the state during the run.
+        # The easiest way is to patch the progress loop to set the report.
+        original_create_progress = cli_mod._create_progress
+
+        def patched_progress():
+            progress = original_create_progress()
+            return progress
+
+        # Instead, patch at a lower level: intercept after compile_graph
+        # and set the state's final_report via a side effect.
+        def set_report(*args, **kwargs):
+            cli_mod._current_state["final_report"] = "# Test Report\n\nFindings."
+            return MagicMock()
+
+        mock_compile.side_effect = set_report
+
+        result = runner.invoke(
+            app, ["run", "test query", "--output", str(out_dir)]
+        )
+        assert result.exit_code == 0
+        assert "Report saved" in result.output
+
+        # Verify a report file was written in the output dir
+        report_files = list(out_dir.glob("run-*.md"))
+        assert len(report_files) == 1
+        assert "Test Report" in report_files[0].read_text()
+
+
+# ---- Resume with verbose flag -----------------------------------------------
+
+
+class TestResumeVerbose:
+    """Test verbose flag in resume command (line 454)."""
+
+    @patch("research_agent.cli._load_settings")
+    def test_resume_verbose_sets_debug(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """Passing --verbose to resume should pass logging level DEBUG
+        to _load_settings."""
+        from research_agent.checkpoints import CheckpointManager
+
+        cp_dir = tmp_path / "checkpoints"
+        run_dir = cp_dir / "run-test456"
+        run_dir.mkdir(parents=True)
+
+        mgr = CheckpointManager(directory=run_dir)
+        mgr.save(
+            "run-test456-step-1", {"query": "test", "step": "plan"}, step_index=1
+        )
+
+        settings = MagicMock()
+        settings.checkpoints.directory = cp_dir
+        settings.checkpoints.max_checkpoints = 5
+        settings.report.output_dir = str(tmp_path / "reports")
+        mock_settings.return_value = settings
+
+        with patch("research_agent.graph.compile_graph", return_value=MagicMock()):
+            result = runner.invoke(
+                app, ["resume", "--dir", str(cp_dir), "--verbose"]
+            )
+
+        assert result.exit_code == 0
+        # _load_settings is called twice: once for resume, once for run.
+        # The first call (from resume) should have logging debug override.
+        first_call_kwargs = mock_settings.call_args_list[0]
+        assert first_call_kwargs[1]["logging"] == {"level": "DEBUG"}
+
+
+# ---- Main entrypoint --------------------------------------------------------
+
+
+class TestMainEntrypoint:
+    """Test the main() function (line 597)."""
+
+    def test_main_calls_app(self) -> None:
+        """main() should invoke the Typer app."""
+        with patch("research_agent.cli.app") as mock_app:
+            main()
+        mock_app.assert_called_once()
+
+
+# ---- Run command with resume_flag finding checkpoint -------------------------
+
+
+class TestRunResumeWithCheckpoint:
+    """Test resume_flag path in the run command (lines 379-380)."""
+
+    @patch("research_agent.graph.compile_graph")
+    @patch("research_agent.cli._load_settings")
+    def test_run_with_resume_flag_loads_checkpoint(
+        self, mock_settings: MagicMock, mock_compile: MagicMock, tmp_path: Path
+    ) -> None:
+        """When --resume is passed and a checkpoint exists, the state is
+        loaded from the checkpoint."""
+        from research_agent.checkpoints import CheckpointManager
+
+        settings = MagicMock()
+        settings.checkpoints.max_checkpoints = 5
+        settings.report.output_dir = str(tmp_path / "reports")
+
+        # The run command creates cp_dir = settings.checkpoints.directory / run_id
+        # but we need the checkpoint to exist *before* the run starts.
+        # Since run_id is generated dynamically, we need to mock generate_run_id.
+        mock_settings.return_value = settings
+        mock_compile.return_value = MagicMock()
+
+        # Pre-create a checkpoint directory. The run command does:
+        #   cp_dir = settings.checkpoints.directory / run_id
+        # We mock generate_run_id to return a known value.
+        run_id = "run-resume-test"
+        cp_dir = tmp_path / "cp" / run_id
+        cp_dir.mkdir(parents=True)
+
+        mgr = CheckpointManager(directory=cp_dir, max_checkpoints=5)
+        mgr.save(
+            f"{run_id}-step-2",
+            {"query": "resumable query", "step": "search", "step_index": 2},
+            step_index=2,
+        )
+
+        settings.checkpoints.directory = tmp_path / "cp"
+
+        with patch(
+            "research_agent.cli.generate_run_id", return_value=run_id
+        ):
+            result = runner.invoke(app, ["run", "resumable query", "--resume"])
+
+        assert result.exit_code == 0
+        assert "Resuming from checkpoint" in result.output
+
+
+# ---- Typer.Exit re-raise (line 421) -----------------------------------------
+
+
+class TestRunTyperExitReRaise:
+    """Test that typer.Exit is re-raised, not caught as a generic exception."""
+
+    @patch("research_agent.graph.compile_graph")
+    @patch("research_agent.cli._load_settings")
+    def test_typer_exit_is_reraised(
+        self, mock_settings: MagicMock, mock_compile: MagicMock, tmp_path: Path
+    ) -> None:
+        """If a typer.Exit is raised during the pipeline, it should propagate
+        directly instead of being caught by the generic Exception handler."""
+        settings = MagicMock()
+        settings.checkpoints.directory = tmp_path / "cp"
+        settings.checkpoints.max_checkpoints = 5
+        settings.report.output_dir = str(tmp_path / "reports")
+        mock_settings.return_value = settings
+
+        # Make compile_graph raise typer.Exit
+        mock_compile.side_effect = typer.Exit(code=0)
+
+        result = runner.invoke(app, ["run", "test query"])
+        # typer.Exit(0) should not trigger the error display path
+        assert result.exit_code == 0

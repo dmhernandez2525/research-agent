@@ -350,3 +350,190 @@ class TestFormatForContent:
         assert formatted.count("Type: Person") == 2
         assert "Alice" in formatted
         assert "Bob" in formatted
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage: _extract_json_ld edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestExtractJsonLdBranches:
+    """Edge cases in _extract_json_ld for uncovered branch paths."""
+
+    def test_graph_with_non_list_value(self) -> None:
+        """When @graph contains a non-list value, the branch skips graph
+        iteration and continues to the next block (line 268->273)."""
+        extractor = StructuredDataExtractor()
+        data = {"@graph": "not-a-list"}
+        html = _make_json_ld(data)
+        result = extractor.extract(html)
+        assert result.has_structured_data is False
+
+    def test_graph_items_where_parse_returns_none(self) -> None:
+        """When @graph contains items that _parse_json_ld_item returns None
+        for (e.g. items without @type), those are filtered out (lines 271->269)."""
+        extractor = StructuredDataExtractor()
+        data = {
+            "@graph": [
+                {"no_type": "just data"},  # No @type, returns None
+                {"@type": "Article", "headline": "Valid Article"},
+            ]
+        }
+        html = _make_json_ld(data)
+        result = extractor.extract(html)
+
+        assert result.has_structured_data is True
+        assert len(result.items) == 1
+        assert result.items[0].schema_type == "Article"
+
+    def test_graph_all_items_return_none(self) -> None:
+        """When all @graph items fail parsing, the result is empty."""
+        extractor = StructuredDataExtractor()
+        data = {
+            "@graph": [
+                {"no_type": "item1"},
+                {"no_type": "item2"},
+            ]
+        }
+        html = _make_json_ld(data)
+        result = extractor.extract(html)
+        assert result.has_structured_data is False
+
+    def test_top_level_list_with_some_none_items(self) -> None:
+        """When a top-level list has items that parse to None, only valid
+        items are included (lines 279->277)."""
+        extractor = StructuredDataExtractor()
+        data = [
+            {"@type": "Person", "name": "Alice"},
+            {"no_type": "invalid"},  # No @type, returns None
+            {"@type": "Person", "name": "Charlie"},
+        ]
+        html = _make_json_ld(data)
+        result = extractor.extract(html)
+
+        assert len(result.items) == 2
+
+    def test_single_dict_parse_returns_none(self) -> None:
+        """When a top-level dict without @type is parsed, _parse_json_ld_item
+        returns None and no item is added (line 281->259)."""
+        extractor = StructuredDataExtractor()
+        data = {"headline": "No type field here"}
+        html = _make_json_ld(data)
+        result = extractor.extract(html)
+        assert result.has_structured_data is False
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage: _parse_json_ld_item edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestParseJsonLdItemBranches:
+    """Edge cases in _parse_json_ld_item for uncovered paths."""
+
+    def test_non_dict_input_returns_none(self) -> None:
+        """When _parse_json_ld_item receives a non-dict (e.g. a string),
+        it returns None (line 298)."""
+        extractor = StructuredDataExtractor()
+        result = extractor._parse_json_ld_item("not a dict")
+        assert result is None
+
+    def test_integer_input_returns_none(self) -> None:
+        """Non-dict primitive types also return None."""
+        extractor = StructuredDataExtractor()
+        result = extractor._parse_json_ld_item(42)
+        assert result is None
+
+    def test_list_input_returns_none(self) -> None:
+        """A list input (not a dict) returns None."""
+        extractor = StructuredDataExtractor()
+        result = extractor._parse_json_ld_item(["@type", "Article"])
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage: _simplify_value edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSimplifyValueBranches:
+    """Edge cases in _simplify_value for uncovered paths."""
+
+    def test_dict_with_only_at_type(self) -> None:
+        """When a dict has none of the expected keys (name, @value, value, text)
+        but has @type, the @type is returned as a string (line 343)."""
+        extractor = StructuredDataExtractor()
+        result = extractor._simplify_value({"@type": "ImageObject", "url": "http://img.png"})
+        assert result == "ImageObject"
+
+    def test_dict_with_no_expected_keys_no_type(self) -> None:
+        """When a dict has none of the expected keys and no @type,
+        str(value) of the dict is returned (line 343 via value.get returning dict)."""
+        extractor = StructuredDataExtractor()
+        result = extractor._simplify_value({"unknown": "data"})
+        # Falls through to str(value.get("@type", value)), @type missing so returns str(dict)
+        assert isinstance(result, str)
+
+    def test_dict_with_at_value_key(self) -> None:
+        """When a dict has '@value', that value is extracted."""
+        extractor = StructuredDataExtractor()
+        result = extractor._simplify_value({"@value": "2024-01-15", "@type": "Date"})
+        assert result == "2024-01-15"
+
+    def test_dict_with_value_key(self) -> None:
+        """When a dict has 'value', that is extracted."""
+        extractor = StructuredDataExtractor()
+        result = extractor._simplify_value({"value": "100", "@type": "MonetaryAmount"})
+        assert result == "100"
+
+    def test_dict_with_text_key(self) -> None:
+        """When a dict has 'text', that is extracted."""
+        extractor = StructuredDataExtractor()
+        result = extractor._simplify_value({"text": "Hello world", "@type": "TextObject"})
+        assert result == "Hello world"
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage: _format_value edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestFormatValueBranches:
+    """Edge cases in _format_value for uncovered paths."""
+
+    def test_empty_list_returns_empty_string(self) -> None:
+        """An empty list should return an empty string (lines 360-361)."""
+        extractor = StructuredDataExtractor()
+        result = extractor._format_value([])
+        assert result == ""
+
+    def test_list_with_only_falsy_values(self) -> None:
+        """A list containing only falsy values (None, 0, '') should return
+        empty string after filtering (line 360)."""
+        extractor = StructuredDataExtractor()
+        result = extractor._format_value([None, "", 0])
+        assert result == ""
+
+    def test_list_with_mixed_truthy_and_falsy(self) -> None:
+        """A list with both truthy and falsy values filters out the falsy ones."""
+        extractor = StructuredDataExtractor()
+        result = extractor._format_value(["hello", None, "world", ""])
+        assert result == "hello, world"
+
+    def test_none_returns_empty_string(self) -> None:
+        """None input returns empty string."""
+        extractor = StructuredDataExtractor()
+        result = extractor._format_value(None)
+        assert result == ""
+
+    def test_string_value_returned_as_is(self) -> None:
+        """A plain string is returned as str()."""
+        extractor = StructuredDataExtractor()
+        result = extractor._format_value("test value")
+        assert result == "test value"
+
+    def test_numeric_value_converted_to_string(self) -> None:
+        """A numeric value is converted to string."""
+        extractor = StructuredDataExtractor()
+        result = extractor._format_value(42)
+        assert result == "42"
