@@ -36,6 +36,21 @@ def generate_run_id() -> str:
     return f"run-{uuid.uuid4().hex[:12]}"
 
 
+def checkpoint_id_for_step(step_index: int) -> str:
+    """Generate a checkpoint ID from a step index.
+
+    Produces IDs in the format ``checkpoint_0001`` for consistent
+    lexicographic ordering.
+
+    Args:
+        step_index: The zero-based step index.
+
+    Returns:
+        A formatted checkpoint identifier string.
+    """
+    return f"checkpoint_{step_index:04d}"
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
