@@ -65,17 +65,31 @@ class ContextManager:
         self,
         window_size: int = 10,
         max_tokens: int = 100_000,
+        compaction_cooldown_turns: int = 3,
     ) -> None:
         """Initialize the context manager.
 
         Args:
             window_size: Number of recent turns to keep in full detail.
             max_tokens: Soft token budget for the context window.
+            compaction_cooldown_turns: Minimum number of new turns between
+                compaction attempts to prevent repeated O(n) scans.
         """
         self.window_size = window_size
         self.max_tokens = max_tokens
+        self.compaction_cooldown_turns = compaction_cooldown_turns
         self._turns: list[Turn] = []
+        self._turns_since_compaction: int = 0
         self._compaction_pending = False
+
+    @property
+    def turn_count(self) -> int:
+        """Return the number of turns tracked.
+
+        Returns:
+            Total number of turns.
+        """
+        return len(self._turns)
 
     @property
     def turns(self) -> list[Turn]:
@@ -98,15 +112,23 @@ class ContextManager:
     def add_turn(self, turn: Turn) -> None:
         """Append a new turn and trigger compaction if needed.
 
+        Compaction is skipped during the cooldown period to prevent
+        repeated O(n) scans when no maskable turns are available.
+
         Args:
             turn: The turn to add.
         """
         self._turns.append(turn)
+        self._turns_since_compaction += 1
 
-        if self.total_tokens > self.max_tokens and not self._compaction_pending:
+        if self._compaction_pending:
+            if self._turns_since_compaction < self.compaction_cooldown_turns:
+                return
+            self._compaction_pending = False
+
+        if self.total_tokens > self.max_tokens:
             result = self.compact()
-            # If compaction freed less than 5% of tokens, don't retry until
-            # new turns are added (avoids O(n) scan on every add)
+            self._turns_since_compaction = 0
             if result.turns_masked == 0:
                 self._compaction_pending = True
 
@@ -134,6 +156,7 @@ class ContextManager:
 
         if turns_masked > 0:
             self._compaction_pending = False
+            self._turns_since_compaction = 0
 
         result = CompactionResult(
             original_tokens=original_tokens,
