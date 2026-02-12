@@ -1,7 +1,8 @@
-"""Unit tests for research_agent.models - three-tier model router."""
+"""Unit tests for research_agent.models - three-tier model router with litellm."""
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +15,8 @@ from research_agent.models import (
     ModelRouter,
     ModelSpec,
     ModelTier,
-    _create_chat_model,
+    _extract_json,
+    _resolve_litellm_model,
 )
 
 # ---------------------------------------------------------------------------
@@ -125,52 +127,83 @@ class TestNodeTierMap:
 
 
 # ---------------------------------------------------------------------------
-# TestCreateChatModel
+# TestResolveLitellmModel
 # ---------------------------------------------------------------------------
 
 
-class TestCreateChatModel:
-    """_create_chat_model instantiates provider-specific models."""
+class TestResolveLitellmModel:
+    """_resolve_litellm_model builds provider-prefixed identifiers."""
 
-    @patch("langchain_anthropic.ChatAnthropic")
-    def test_creates_anthropic_model(self, mock_cls: MagicMock) -> None:
+    def test_anthropic_model(self) -> None:
         spec = ModelSpec(provider="anthropic", model_id="claude-haiku-3-5-20241022")
-        _create_chat_model(spec)
-        mock_cls.assert_called_once_with(
-            model="claude-haiku-3-5-20241022",
-            max_tokens=4096,
-            temperature=0.1,
-        )
+        assert _resolve_litellm_model(spec) == "anthropic/claude-haiku-3-5-20241022"
 
-    @patch("langchain_openai.ChatOpenAI")
-    def test_creates_openai_model(self, mock_cls: MagicMock) -> None:
+    def test_openai_model(self) -> None:
         spec = ModelSpec(provider="openai", model_id="gpt-4o-mini")
-        _create_chat_model(spec)
-        mock_cls.assert_called_once_with(
-            model="gpt-4o-mini",
-            max_tokens=4096,
-            temperature=0.1,
-        )
+        assert _resolve_litellm_model(spec) == "openai/gpt-4o-mini"
 
-    @patch("langchain_anthropic.ChatAnthropic")
-    def test_passes_custom_params(self, mock_cls: MagicMock) -> None:
-        spec = ModelSpec(
-            provider="anthropic",
-            model_id="claude-sonnet-4-5-20250929",
-            max_tokens=8192,
-            temperature=0.5,
-        )
-        _create_chat_model(spec)
-        mock_cls.assert_called_once_with(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=8192,
-            temperature=0.5,
-        )
+    def test_google_model(self) -> None:
+        spec = ModelSpec(provider="google", model_id="gemini-pro")
+        assert _resolve_litellm_model(spec) == "gemini/gemini-pro"
 
     def test_unsupported_provider_raises(self) -> None:
         spec = ModelSpec(provider="unsupported", model_id="test-model")
         with pytest.raises(ModelRoutingError, match="Unsupported provider"):
-            _create_chat_model(spec)
+            _resolve_litellm_model(spec)
+
+
+# ---------------------------------------------------------------------------
+# TestExtractJson
+# ---------------------------------------------------------------------------
+
+
+class TestExtractJson:
+    """_extract_json parses JSON from various LLM response formats."""
+
+    def test_direct_json(self) -> None:
+        data = _extract_json('{"key": "value"}')
+        assert data == {"key": "value"}
+
+    def test_json_with_whitespace(self) -> None:
+        data = _extract_json('  \n  {"key": "value"}  \n  ')
+        assert data == {"key": "value"}
+
+    def test_json_in_code_fence(self) -> None:
+        text = '```json\n{"key": "value"}\n```'
+        data = _extract_json(text)
+        assert data == {"key": "value"}
+
+    def test_json_in_plain_code_fence(self) -> None:
+        text = '```\n{"key": "value"}\n```'
+        data = _extract_json(text)
+        assert data == {"key": "value"}
+
+    def test_json_with_surrounding_text(self) -> None:
+        text = 'Here is the result:\n{"key": "value"}\nDone.'
+        data = _extract_json(text)
+        assert data == {"key": "value"}
+
+    def test_nested_json(self) -> None:
+        text = '{"outer": {"inner": [1, 2, 3]}}'
+        data = _extract_json(text)
+        assert data["outer"]["inner"] == [1, 2, 3]
+
+    def test_raises_on_no_json(self) -> None:
+        with pytest.raises(ValueError, match="Could not extract JSON"):
+            _extract_json("no json here at all")
+
+    def test_raises_on_json_array(self) -> None:
+        with pytest.raises(ValueError, match="Could not extract JSON"):
+            _extract_json("[1, 2, 3]")
+
+    def test_raises_on_empty_string(self) -> None:
+        with pytest.raises(ValueError, match="Could not extract JSON"):
+            _extract_json("")
+
+    def test_complex_nested_json(self) -> None:
+        obj = {"title": "Test", "items": [{"a": 1}, {"b": 2}], "count": 5}
+        data = _extract_json(json.dumps(obj))
+        assert data == obj
 
 
 # ---------------------------------------------------------------------------
@@ -196,10 +229,6 @@ class TestModelRouterInit:
         router = ModelRouter(chains=custom)
         assert router.chains == custom
 
-    def test_empty_model_cache(self) -> None:
-        router = ModelRouter()
-        assert len(router._model_cache) == 0
-
 
 # ---------------------------------------------------------------------------
 # TestGetTierForNode
@@ -224,24 +253,17 @@ class TestGetTierForNode:
 
 
 class TestGetModel:
-    """get_model returns cached model instances."""
+    """get_model returns litellm model identifier strings."""
 
-    @patch("langchain_anthropic.ChatAnthropic")
-    def test_returns_model(self, mock_cls: MagicMock) -> None:
-        mock_instance = MagicMock()
-        mock_cls.return_value = mock_instance
+    def test_returns_model_id(self) -> None:
         router = ModelRouter()
-        model = router.get_model(ModelTier.FAST)
-        assert model is mock_instance
+        model_id = router.get_model(ModelTier.FAST)
+        assert model_id == "anthropic/claude-haiku-3-5-20241022"
 
-    @patch("langchain_anthropic.ChatAnthropic")
-    def test_caches_model(self, mock_cls: MagicMock) -> None:
-        mock_cls.return_value = MagicMock()
+    def test_returns_correct_tier_model(self) -> None:
         router = ModelRouter()
-        model1 = router.get_model(ModelTier.FAST)
-        model2 = router.get_model(ModelTier.FAST)
-        assert model1 is model2
-        mock_cls.assert_called_once()
+        model_id = router.get_model(ModelTier.SMART)
+        assert "sonnet" in model_id
 
     def test_empty_chain_raises(self) -> None:
         router = ModelRouter(chains={ModelTier.FAST: []})
@@ -266,8 +288,9 @@ class TestInvokeWithFallback:
 
     @pytest.mark.asyncio
     async def test_success_on_first_model(self) -> None:
-        mock_model = AsyncMock()
-        mock_model.ainvoke = AsyncMock(return_value="response")
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "response"
 
         router = ModelRouter(
             chains={
@@ -276,21 +299,25 @@ class TestInvokeWithFallback:
                 ]
             }
         )
-        router._model_cache["anthropic:test-model"] = mock_model
 
-        result = await router.invoke_with_fallback(
-            ModelTier.FAST, [{"role": "user", "content": "hello"}]
-        )
-        assert result == "response"
-        mock_model.ainvoke.assert_called_once()
+        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+            result = await router.invoke_with_fallback(
+                ModelTier.FAST, [{"role": "user", "content": "hello"}]
+            )
+        assert result is mock_response
 
     @pytest.mark.asyncio
     async def test_fallback_to_second_model(self) -> None:
-        failing_model = AsyncMock()
-        failing_model.ainvoke = AsyncMock(side_effect=RuntimeError("API down"))
+        mock_response = MagicMock()
 
-        success_model = AsyncMock()
-        success_model.ainvoke = AsyncMock(return_value="fallback response")
+        call_count = 0
+
+        async def mock_acompletion(**kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            if "anthropic" in kwargs.get("model", ""):
+                raise RuntimeError("API down")
+            return mock_response
 
         router = ModelRouter(
             chains={
@@ -300,19 +327,15 @@ class TestInvokeWithFallback:
                 ]
             }
         )
-        router._model_cache["anthropic:primary"] = failing_model
-        router._model_cache["openai:fallback"] = success_model
 
-        result = await router.invoke_with_fallback(
-            ModelTier.FAST, [{"role": "user", "content": "hello"}]
-        )
-        assert result == "fallback response"
+        with patch("litellm.acompletion", side_effect=mock_acompletion):
+            result = await router.invoke_with_fallback(
+                ModelTier.FAST, [{"role": "user", "content": "hello"}]
+            )
+        assert result is mock_response
 
     @pytest.mark.asyncio
     async def test_all_models_fail_raises(self) -> None:
-        failing_model = AsyncMock()
-        failing_model.ainvoke = AsyncMock(side_effect=RuntimeError("fail"))
-
         router = ModelRouter(
             chains={
                 ModelTier.FAST: [
@@ -320,9 +343,15 @@ class TestInvokeWithFallback:
                 ]
             }
         )
-        router._model_cache["anthropic:model-a"] = failing_model
 
-        with pytest.raises(ModelRoutingError, match="All models in FAST chain failed"):
+        with (
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("fail"),
+            ),
+            pytest.raises(ModelRoutingError, match="All models in FAST chain failed"),
+        ):
             await router.invoke_with_fallback(
                 ModelTier.FAST, [{"role": "user", "content": "hello"}]
             )
@@ -336,93 +365,78 @@ class TestInvokeWithFallback:
             )
 
     @pytest.mark.asyncio
-    async def test_passes_kwargs_to_model(self) -> None:
-        mock_model = AsyncMock()
-        mock_model.ainvoke = AsyncMock(return_value="ok")
+    async def test_passes_model_params(self) -> None:
+        mock_response = MagicMock()
 
         router = ModelRouter(
             chains={
                 ModelTier.SMART: [
-                    ModelSpec(provider="anthropic", model_id="test"),
-                ]
-            }
-        )
-        router._model_cache["anthropic:test"] = mock_model
-
-        await router.invoke_with_fallback(
-            ModelTier.SMART,
-            [{"role": "user", "content": "hello"}],
-            stop=["END"],
-        )
-        mock_model.ainvoke.assert_called_once_with(
-            [{"role": "user", "content": "hello"}],
-            stop=["END"],
-        )
-
-    @pytest.mark.asyncio
-    async def test_instantiates_model_on_cache_miss(self) -> None:
-        mock_model = AsyncMock()
-        mock_model.ainvoke = AsyncMock(return_value="ok")
-
-        router = ModelRouter(
-            chains={
-                ModelTier.FAST: [
-                    ModelSpec(provider="anthropic", model_id="haiku"),
+                    ModelSpec(
+                        provider="anthropic",
+                        model_id="test",
+                        max_tokens=2048,
+                        temperature=0.5,
+                    ),
                 ]
             }
         )
 
-        with patch("langchain_anthropic.ChatAnthropic", return_value=mock_model):
-            result = await router.invoke_with_fallback(
-                ModelTier.FAST, [{"role": "user", "content": "hello"}]
+        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response) as mock_call:
+            await router.invoke_with_fallback(
+                ModelTier.SMART,
+                [{"role": "user", "content": "hello"}],
             )
-
-        assert result == "ok"
-        assert "anthropic:haiku" in router._model_cache
+            call_kwargs = mock_call.call_args[1]
+            assert call_kwargs["model"] == "anthropic/test"
+            assert call_kwargs["max_tokens"] == 2048
+            assert call_kwargs["temperature"] == 0.5
 
 
 # ---------------------------------------------------------------------------
-# TestInvokeWithRetry
+# TestCallWithRetry
 # ---------------------------------------------------------------------------
 
 
-class TestInvokeWithRetry:
-    """_invoke_with_retry retries on transient failures."""
+class TestCallWithRetry:
+    """_call_with_retry retries on transient failures."""
 
     @pytest.mark.asyncio
     async def test_succeeds_on_first_try(self) -> None:
-        mock_model = AsyncMock()
-        mock_model.ainvoke = AsyncMock(return_value="ok")
+        mock_response = MagicMock()
 
-        result = await ModelRouter._invoke_with_retry(
-            mock_model, [{"role": "user", "content": "test"}]
-        )
-        assert result == "ok"
-        assert mock_model.ainvoke.call_count == 1
+        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response):
+            result = await ModelRouter._call_with_retry(
+                "anthropic/test", [{"role": "user", "content": "test"}]
+            )
+        assert result is mock_response
 
     @pytest.mark.asyncio
     async def test_retries_on_transient_failure(self) -> None:
-        mock_model = AsyncMock()
-        mock_model.ainvoke = AsyncMock(
-            side_effect=[RuntimeError("transient"), "recovered"]
-        )
+        mock_response = MagicMock()
 
-        result = await ModelRouter._invoke_with_retry(
-            mock_model, [{"role": "user", "content": "test"}]
-        )
-        assert result == "recovered"
-        assert mock_model.ainvoke.call_count == 2
+        with patch(
+            "litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=[RuntimeError("transient"), mock_response],
+        ):
+            result = await ModelRouter._call_with_retry(
+                "anthropic/test", [{"role": "user", "content": "test"}]
+            )
+        assert result is mock_response
 
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self) -> None:
-        mock_model = AsyncMock()
-        mock_model.ainvoke = AsyncMock(side_effect=RuntimeError("persistent failure"))
-
-        with pytest.raises(RetryError):
-            await ModelRouter._invoke_with_retry(
-                mock_model, [{"role": "user", "content": "test"}]
+        with (
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("persistent failure"),
+            ),
+            pytest.raises(RetryError),
+        ):
+            await ModelRouter._call_with_retry(
+                "anthropic/test", [{"role": "user", "content": "test"}]
             )
-        assert mock_model.ainvoke.call_count == 3
 
 
 # ---------------------------------------------------------------------------

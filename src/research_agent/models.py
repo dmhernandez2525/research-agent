@@ -1,13 +1,16 @@
 """Three-tier model router with fallback chains and tenacity retry.
 
 Routes LLM calls to FAST, SMART, or STRATEGIC tiers depending on the
-task requirements, with automatic fallback on failure.
+task requirements, with automatic fallback on failure. Uses litellm
+for provider-agnostic LLM access.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 from pydantic import BaseModel, Field
@@ -20,14 +23,19 @@ from tenacity import (
 
 from research_agent.exceptions import ModelRoutingError
 
-if TYPE_CHECKING:
-    from langchain_core.language_models import BaseChatModel
-
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 _MAX_RETRIES = 3
 _BACKOFF_MIN_SECONDS = 1
 _BACKOFF_MAX_SECONDS = 10
+
+_SUPPORTED_PROVIDERS = frozenset({"anthropic", "openai", "google"})
+
+_PROVIDER_PREFIX: dict[str, str] = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "google": "gemini",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -86,43 +94,81 @@ NODE_TIER_MAP: dict[str, ModelTier] = {
 
 
 # ---------------------------------------------------------------------------
-# Model instantiation
+# litellm helpers
 # ---------------------------------------------------------------------------
 
 
-def _create_chat_model(spec: ModelSpec) -> BaseChatModel:
-    """Instantiate a LangChain chat model from a ModelSpec.
+def _resolve_litellm_model(spec: ModelSpec) -> str:
+    """Build a litellm model identifier from a ModelSpec.
 
-    Uses lazy imports so provider SDKs are only loaded when needed.
+    litellm uses provider-prefixed identifiers (e.g.
+    ``anthropic/claude-haiku-3-5-20241022``).
 
     Args:
         spec: The model specification.
 
     Returns:
-        A configured LangChain chat model instance.
+        A litellm-compatible model identifier string.
 
     Raises:
         ModelRoutingError: If the provider is not supported.
     """
-    if spec.provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
+    if spec.provider not in _SUPPORTED_PROVIDERS:
+        raise ModelRoutingError(f"Unsupported provider: {spec.provider!r}")
+    prefix = _PROVIDER_PREFIX[spec.provider]
+    return f"{prefix}/{spec.model_id}"
 
-        return ChatAnthropic(
-            model=spec.model_id,
-            max_tokens=spec.max_tokens,
-            temperature=spec.temperature,
-        )
 
-    if spec.provider == "openai":
-        from langchain_openai import ChatOpenAI
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
+_JSON_BRACE_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-        return ChatOpenAI(
-            model=spec.model_id,
-            max_tokens=spec.max_tokens,
-            temperature=spec.temperature,
-        )
 
-    raise ModelRoutingError(f"Unsupported provider: {spec.provider!r}")
+def _extract_json(text: str) -> dict[str, Any]:
+    """Extract a JSON object from LLM response text.
+
+    Handles cases where JSON is wrapped in markdown code fences or
+    surrounded by explanation text.
+
+    Args:
+        text: Raw LLM response content.
+
+    Returns:
+        Parsed JSON dictionary.
+
+    Raises:
+        ValueError: If no valid JSON object can be extracted.
+    """
+    text = text.strip()
+
+    # Direct parse
+    try:
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+    except json.JSONDecodeError:
+        pass
+
+    # Extract from code fences
+    fence_match = _JSON_FENCE_RE.search(text)
+    if fence_match:
+        try:
+            result = json.loads(fence_match.group(1).strip())
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    # Extract first { ... } block
+    brace_match = _JSON_BRACE_RE.search(text)
+    if brace_match:
+        try:
+            result = json.loads(brace_match.group(0))
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not extract JSON from response: {text[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +194,6 @@ class ModelRouter:
                 ``DEFAULT_CHAINS``.
         """
         self.chains = chains or dict(DEFAULT_CHAINS)
-        self._model_cache: dict[str, BaseChatModel] = {}
 
     def get_tier_for_node(self, node_name: str) -> ModelTier:
         """Return the recommended model tier for a graph node.
@@ -161,44 +206,14 @@ class ModelRouter:
         """
         return NODE_TIER_MAP.get(node_name, ModelTier.SMART)
 
-    @staticmethod
-    async def _invoke_with_retry(
-        model: BaseChatModel,
-        messages: list[dict[str, Any]],
-        **kwargs: Any,
-    ) -> Any:
-        """Invoke a model with tenacity retry (3 attempts, exponential backoff).
-
-        Args:
-            model: The LangChain chat model to invoke.
-            messages: Chat messages to send.
-            **kwargs: Additional keyword arguments.
-
-        Returns:
-            The model's response.
-
-        Raises:
-            RetryError: If all retry attempts fail.
-        """
-
-        @retry(
-            stop=stop_after_attempt(_MAX_RETRIES),
-            wait=wait_exponential(min=_BACKOFF_MIN_SECONDS, max=_BACKOFF_MAX_SECONDS),
-            reraise=False,
-        )
-        async def _do_invoke() -> Any:
-            return await model.ainvoke(messages, **kwargs)
-
-        return await _do_invoke()
-
-    def get_model(self, tier: ModelTier) -> BaseChatModel:
-        """Get the primary model for a tier (with caching).
+    def get_model(self, tier: ModelTier) -> str:
+        """Get the litellm model identifier for the primary model in a tier.
 
         Args:
             tier: The model tier.
 
         Returns:
-            A LangChain chat model instance.
+            A litellm model identifier string.
 
         Raises:
             ModelRoutingError: If no models are available for the tier.
@@ -206,14 +221,42 @@ class ModelRouter:
         chain = self.chains.get(tier, [])
         if not chain:
             raise ModelRoutingError(f"No models configured for tier {tier.value}")
+        return _resolve_litellm_model(chain[0])
 
-        primary = chain[0]
-        cache_key = f"{primary.provider}:{primary.model_id}"
+    @staticmethod
+    async def _call_with_retry(
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> Any:
+        """Call litellm.acompletion with tenacity retry.
 
-        if cache_key not in self._model_cache:
-            self._model_cache[cache_key] = _create_chat_model(primary)
+        Args:
+            model_id: The litellm model identifier.
+            messages: Chat messages to send.
+            **kwargs: Additional keyword arguments for litellm.
 
-        return self._model_cache[cache_key]
+        Returns:
+            The litellm ModelResponse.
+
+        Raises:
+            RetryError: If all retry attempts fail.
+        """
+        import litellm
+
+        @retry(
+            stop=stop_after_attempt(_MAX_RETRIES),
+            wait=wait_exponential(min=_BACKOFF_MIN_SECONDS, max=_BACKOFF_MAX_SECONDS),
+            reraise=False,
+        )
+        async def _do_call() -> Any:
+            return await litellm.acompletion(
+                model=model_id,
+                messages=messages,
+                **kwargs,
+            )
+
+        return await _do_call()
 
     async def invoke_with_fallback(
         self,
@@ -230,10 +273,10 @@ class ModelRouter:
         Args:
             tier: The model tier to use.
             messages: Chat messages to send.
-            **kwargs: Additional keyword arguments for the model.
+            **kwargs: Additional keyword arguments for litellm.
 
         Returns:
-            The model's response.
+            The litellm ModelResponse.
 
         Raises:
             ModelRoutingError: If all models in the chain fail.
@@ -247,25 +290,28 @@ class ModelRouter:
         for spec in chain:
             cache_key = f"{spec.provider}:{spec.model_id}"
 
-            if cache_key not in self._model_cache:
-                try:
-                    self._model_cache[cache_key] = _create_chat_model(spec)
-                except ModelRoutingError:
-                    raise
-                except Exception as exc:
-                    logger.warning(
-                        "model_instantiation_failed",
-                        provider=spec.provider,
-                        model_id=spec.model_id,
-                        error=str(exc),
-                    )
-                    errors.append((cache_key, exc))
-                    continue
+            try:
+                model_id = _resolve_litellm_model(spec)
+            except ModelRoutingError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "model_resolution_failed",
+                    provider=spec.provider,
+                    model_id=spec.model_id,
+                    error=str(exc),
+                )
+                errors.append((cache_key, exc))
+                continue
 
-            model = self._model_cache[cache_key]
+            call_kwargs = {
+                "max_tokens": spec.max_tokens,
+                "temperature": spec.temperature,
+                **kwargs,
+            }
 
             try:
-                result = await self._invoke_with_retry(model, messages, **kwargs)
+                result = await self._call_with_retry(model_id, messages, **call_kwargs)
                 logger.info(
                     "model_invoke_success",
                     provider=spec.provider,
@@ -303,20 +349,13 @@ class ModelRouter:
         Args:
             node_name: The graph node name.
             messages: Chat messages to send.
-            **kwargs: Additional keyword arguments for the model.
+            **kwargs: Additional keyword arguments for litellm.
 
         Returns:
-            The model's response.
+            The litellm ModelResponse.
 
         Raises:
             ModelRoutingError: If all models in the resolved tier's chain fail.
         """
         tier = self.get_tier_for_node(node_name)
         return await self.invoke_with_fallback(tier, messages, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-

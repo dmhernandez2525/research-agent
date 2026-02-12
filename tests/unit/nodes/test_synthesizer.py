@@ -304,18 +304,33 @@ class TestHasSourcesSection:
 class TestSynthesizeReport:
     """_synthesize_report calls the LLM with proper prompts."""
 
+    def _make_mock_response(self, synthesis_result: SynthesisOutput) -> MagicMock:
+        """Build a mock litellm response from a SynthesisOutput."""
+        import json
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({
+            "title": synthesis_result.title,
+            "report": synthesis_result.report,
+            "sources": [
+                {"url": s.url, "title": s.title} for s in synthesis_result.sources
+            ],
+        })
+        return mock_response
+
     @pytest.mark.asyncio()
     async def test_returns_synthesis_output(
         self, mock_synthesis_result: SynthesisOutput
     ) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_synthesis_result)
-
-        mock_model = MagicMock()
-        mock_model.with_structured_output.return_value = mock_structured
+        mock_response = self._make_mock_response(mock_synthesis_result)
 
         with (
-            patch("langchain_anthropic.ChatAnthropic", return_value=mock_model),
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
             patch("research_agent.nodes.synthesizer._load_prompt") as mock_prompt,
         ):
             mock_prompt.return_value = {
@@ -331,16 +346,14 @@ class TestSynthesizeReport:
     async def test_uses_strategic_tier_model(
         self, mock_synthesis_result: SynthesisOutput
     ) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_synthesis_result)
-
-        mock_model = MagicMock()
-        mock_model.with_structured_output.return_value = mock_structured
+        mock_response = self._make_mock_response(mock_synthesis_result)
 
         with (
             patch(
-                "langchain_anthropic.ChatAnthropic", return_value=mock_model
-            ) as mock_cls,
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_call,
             patch("research_agent.nodes.synthesizer._load_prompt") as mock_prompt,
         ):
             mock_prompt.return_value = {
@@ -349,21 +362,21 @@ class TestSynthesizeReport:
             }
             await _synthesize_report("query", "context")
 
-        call_kwargs = mock_cls.call_args[1]
+        call_kwargs = mock_call.call_args[1]
         assert call_kwargs["max_tokens"] == 8192
 
     @pytest.mark.asyncio()
     async def test_includes_max_length_in_prompt(
         self, mock_synthesis_result: SynthesisOutput
     ) -> None:
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke = AsyncMock(return_value=mock_synthesis_result)
-
-        mock_model = MagicMock()
-        mock_model.with_structured_output.return_value = mock_structured
+        mock_response = self._make_mock_response(mock_synthesis_result)
 
         with (
-            patch("langchain_anthropic.ChatAnthropic", return_value=mock_model),
+            patch(
+                "litellm.acompletion",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_call,
             patch("research_agent.nodes.synthesizer._load_prompt") as mock_prompt,
         ):
             mock_prompt.return_value = {
@@ -372,8 +385,9 @@ class TestSynthesizeReport:
             }
             await _synthesize_report("query", "context", max_length=5000)
 
-        call_args = mock_structured.ainvoke.call_args[0][0]
-        assert "5000" in call_args[1]["content"]
+        call_kwargs = mock_call.call_args[1]
+        messages = call_kwargs["messages"]
+        assert "5000" in messages[1]["content"]
 
 
 # ---------------------------------------------------------------------------
