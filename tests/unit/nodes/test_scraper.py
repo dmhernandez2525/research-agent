@@ -10,7 +10,9 @@ import pytest
 
 from research_agent.nodes.scraper import (
     _FLAG_QUALITY_THRESHOLD,
+    _JS_FALLBACK_QUALITY_THRESHOLD,
     _MIN_QUALITY_SCORE,
+    _crawl4ai_fallback,
     _fetch_and_extract,
     _sanitize_content,
     _score_content_quality,
@@ -560,3 +562,230 @@ class TestScrapeNode:
 
         assert result["scraped_pages"] == []
         assert result["step"] == "scrape"
+
+
+# ---- _crawl4ai_fallback ------------------------------------------------------
+
+
+class TestCrawl4aiFallback:
+    """Crawl4AI fallback for low-quality Trafilatura extraction."""
+
+    @pytest.mark.asyncio()
+    async def test_returns_scraped_page_on_success(
+        self, search_result: SearchResult
+    ) -> None:
+        with patch(
+            "research_agent.scraping.crawl4ai_engine.crawl4ai_extract",
+            new_callable=AsyncMock,
+            return_value={
+                "content": "JS-rendered content with enough words for quality. " * 10,
+                "title": "Crawl4AI Title",
+                "success": True,
+            },
+        ):
+            result = await _crawl4ai_fallback(search_result)
+
+        assert result is not None
+        assert isinstance(result, ScrapedPage)
+        assert result.url == search_result.url
+        assert result.subtopic_id == search_result.subtopic_id
+        assert result.word_count > 0
+
+    @pytest.mark.asyncio()
+    async def test_returns_none_when_extract_fails(
+        self, search_result: SearchResult
+    ) -> None:
+        with patch(
+            "research_agent.scraping.crawl4ai_engine.crawl4ai_extract",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = await _crawl4ai_fallback(search_result)
+
+        assert result is None
+
+    @pytest.mark.asyncio()
+    async def test_sanitizes_content(self, search_result: SearchResult) -> None:
+        with patch(
+            "research_agent.scraping.crawl4ai_engine.crawl4ai_extract",
+            new_callable=AsyncMock,
+            return_value={
+                "content": "Good text. <script>evil</script> More text. " * 5,
+                "title": "Title",
+                "success": True,
+            },
+        ):
+            result = await _crawl4ai_fallback(search_result)
+
+        assert result is not None
+        assert "<script" not in result.content
+
+    @pytest.mark.asyncio()
+    async def test_truncates_to_max_length(self, search_result: SearchResult) -> None:
+        with patch(
+            "research_agent.scraping.crawl4ai_engine.crawl4ai_extract",
+            new_callable=AsyncMock,
+            return_value={
+                "content": "A " * 500,
+                "title": "Title",
+                "success": True,
+            },
+        ):
+            result = await _crawl4ai_fallback(search_result, max_content_length=100)
+
+        assert result is not None
+        assert len(result.content) <= 100
+
+    @pytest.mark.asyncio()
+    async def test_uses_result_title_as_fallback(
+        self, search_result: SearchResult
+    ) -> None:
+        with patch(
+            "research_agent.scraping.crawl4ai_engine.crawl4ai_extract",
+            new_callable=AsyncMock,
+            return_value={
+                "content": "Some content. " * 5,
+                "title": "",
+                "success": True,
+            },
+        ):
+            result = await _crawl4ai_fallback(search_result)
+
+        assert result is not None
+        assert result.title == search_result.title
+
+
+# ---- JS fallback integration in _fetch_and_extract ---------------------------
+
+
+class TestFetchAndExtractWithJsFallback:
+    """_fetch_and_extract triggers Crawl4AI fallback for low quality."""
+
+    @pytest.mark.asyncio()
+    async def test_triggers_fallback_on_low_quality(
+        self, search_result: SearchResult
+    ) -> None:
+        mock_response = MagicMock()
+        mock_response.text = "<html><body>tiny</body></html>"
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        fallback_page = ScrapedPage(
+            url=search_result.url,
+            subtopic_id=search_result.subtopic_id,
+            title="Fallback",
+            content="JS-rendered content. " * 20,
+            word_count=40,
+            quality_score=0.6,
+        )
+
+        with (
+            patch(
+                "research_agent.nodes.scraper.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            patch("trafilatura.extract", return_value="tiny"),
+            patch(
+                "research_agent.nodes.scraper._crawl4ai_fallback",
+                new_callable=AsyncMock,
+                return_value=fallback_page,
+            ) as mock_fallback,
+        ):
+            result = await _fetch_and_extract(search_result, js_fallback=True)
+
+        mock_fallback.assert_called_once()
+        assert result is not None
+        assert result.title == "Fallback"
+
+    @pytest.mark.asyncio()
+    async def test_no_fallback_when_disabled(
+        self, search_result: SearchResult
+    ) -> None:
+        mock_response = MagicMock()
+        mock_response.text = "<html><body>tiny</body></html>"
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "research_agent.nodes.scraper.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            patch("trafilatura.extract", return_value="tiny"),
+            patch(
+                "research_agent.nodes.scraper._crawl4ai_fallback",
+                new_callable=AsyncMock,
+            ) as mock_fallback,
+        ):
+            await _fetch_and_extract(search_result)
+
+        mock_fallback.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_no_fallback_when_quality_above_threshold(
+        self, search_result: SearchResult, good_article: str
+    ) -> None:
+        mock_response = MagicMock()
+        mock_response.text = f"<html><body>{good_article}</body></html>"
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "research_agent.nodes.scraper.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            patch("trafilatura.extract", return_value=good_article),
+            patch(
+                "research_agent.nodes.scraper._crawl4ai_fallback",
+                new_callable=AsyncMock,
+            ) as mock_fallback,
+        ):
+            await _fetch_and_extract(search_result, js_fallback=True)
+
+        mock_fallback.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_returns_trafilatura_result_when_fallback_fails(
+        self, search_result: SearchResult
+    ) -> None:
+        mock_response = MagicMock()
+        mock_response.text = "<html><body>tiny</body></html>"
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "research_agent.nodes.scraper.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            patch("trafilatura.extract", return_value="tiny"),
+            patch(
+                "research_agent.nodes.scraper._crawl4ai_fallback",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _fetch_and_extract(search_result, js_fallback=True)
+
+        assert result is not None
+        assert result.content == "tiny"
+
+    def test_js_fallback_threshold_is_sensible(self) -> None:
+        assert 0.0 < _JS_FALLBACK_QUALITY_THRESHOLD < _MIN_QUALITY_SCORE

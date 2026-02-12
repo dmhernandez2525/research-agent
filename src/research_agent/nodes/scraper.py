@@ -31,6 +31,7 @@ _DEFAULT_MAX_CONTENT_LENGTH = 500_000
 
 _MIN_QUALITY_SCORE = 0.4
 _FLAG_QUALITY_THRESHOLD = 0.7
+_JS_FALLBACK_QUALITY_THRESHOLD = 0.3
 
 # Patterns that indicate prompt injection attempts in extracted content
 _INJECTION_PATTERNS: list[re.Pattern[str]] = [
@@ -120,21 +121,73 @@ def _score_content_quality(text: str) -> float:
 # ---------------------------------------------------------------------------
 
 
+async def _crawl4ai_fallback(
+    result: SearchResult,
+    max_content_length: int = _DEFAULT_MAX_CONTENT_LENGTH,
+) -> ScrapedPage | None:
+    """Try Crawl4AI extraction as a fallback for JS-heavy sites.
+
+    Args:
+        result: The search result to scrape.
+        max_content_length: Maximum characters to retain.
+
+    Returns:
+        A ``ScrapedPage`` if Crawl4AI succeeds with acceptable quality,
+        or ``None`` if it fails or produces low-quality content.
+    """
+    from research_agent.scraping.crawl4ai_engine import crawl4ai_extract
+
+    logger.info("crawl4ai_fallback_attempt", url=result.url)
+
+    extracted = await crawl4ai_extract(result.url)
+    if extracted is None:
+        return None
+
+    content = _sanitize_content(extracted["content"])
+
+    if len(content) > max_content_length:
+        content = content[:max_content_length]
+
+    quality = _score_content_quality(content)
+    word_count = len(content.split())
+
+    title = extracted.get("title", "") or result.title
+
+    logger.info(
+        "crawl4ai_fallback_ok",
+        url=result.url,
+        word_count=word_count,
+        quality_score=quality,
+    )
+
+    return ScrapedPage(
+        url=result.url,
+        subtopic_id=result.subtopic_id,
+        title=title,
+        content=content,
+        word_count=word_count,
+        quality_score=quality,
+    )
+
+
 async def _fetch_and_extract(
     result: SearchResult,
     timeout: int = _DEFAULT_TIMEOUT,
     max_content_length: int = _DEFAULT_MAX_CONTENT_LENGTH,
+    js_fallback: bool = False,
 ) -> ScrapedPage | None:
     """Fetch a URL and extract content using Trafilatura.
 
     Fetches HTML via httpx, extracts main content with Trafilatura,
     sanitizes against prompt injection, scores quality, and truncates
-    to max_content_length.
+    to max_content_length. If quality is very low and ``js_fallback``
+    is enabled, retries with Crawl4AI for JS-heavy sites.
 
     Args:
         result: The search result to scrape.
         timeout: HTTP request timeout in seconds.
         max_content_length: Maximum characters to retain.
+        js_fallback: Whether to try Crawl4AI when Trafilatura quality is low.
 
     Returns:
         A ``ScrapedPage`` model, or ``None`` if extraction failed.
@@ -189,6 +242,12 @@ async def _fetch_and_extract(
         quality_score=quality,
     )
 
+    # If quality is very low, try Crawl4AI fallback for JS-heavy sites
+    if quality < _JS_FALLBACK_QUALITY_THRESHOLD and js_fallback:
+        fallback_page = await _crawl4ai_fallback(result, max_content_length)
+        if fallback_page is not None:
+            return fallback_page
+
     return ScrapedPage(
         url=url,
         subtopic_id=result.subtopic_id,
@@ -204,6 +263,7 @@ async def _scrape_batch(
     max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
     timeout: int = _DEFAULT_TIMEOUT,
     max_content_length: int = _DEFAULT_MAX_CONTENT_LENGTH,
+    js_fallback: bool = False,
 ) -> list[ScrapedPage]:
     """Scrape a batch of search results concurrently.
 
@@ -215,6 +275,7 @@ async def _scrape_batch(
         max_concurrent: Maximum concurrent HTTP requests.
         timeout: Per-request timeout in seconds.
         max_content_length: Maximum characters per page.
+        js_fallback: Whether to try Crawl4AI when Trafilatura quality is low.
 
     Returns:
         List of successfully scraped content (failures are logged and skipped).
@@ -227,6 +288,7 @@ async def _scrape_batch(
                 r,
                 timeout=timeout,
                 max_content_length=max_content_length,
+                js_fallback=js_fallback,
             )
 
     tasks = [_limited_fetch(r) for r in results]

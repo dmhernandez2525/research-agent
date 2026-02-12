@@ -61,6 +61,10 @@ class ScrapingSettings(BaseModel):
     max_content_length: int = Field(
         default=500_000, gt=0, description="Max characters per scraped page."
     )
+    js_fallback: bool = Field(
+        default=False,
+        description="Use Crawl4AI as fallback for JS-heavy sites with low quality scores.",
+    )
 
 
 class EmbeddingSettings(BaseModel):
