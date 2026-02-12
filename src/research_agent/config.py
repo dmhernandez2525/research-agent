@@ -116,6 +116,11 @@ class ReportSettings(BaseModel):
         gt=0,
         description="Soft max length in tokens for the final report.",
     )
+    serial_synthesis_threshold: int = Field(
+        default=3,
+        ge=1,
+        description="Use serial section-by-section synthesis when subtopic count exceeds this.",
+    )
 
 
 class LoggingSettings(BaseModel):

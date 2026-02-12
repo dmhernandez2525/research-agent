@@ -1,7 +1,9 @@
 """Final report generation node.
 
-Performs one-shot synthesis from all per-subtask summaries into a coherent
-research report with proper citations and structure.
+Supports two synthesis modes:
+- **Single-pass**: All summaries synthesized in one LLM call (default for <= 3 subtopics).
+- **Serial**: Section-by-section generation with running context, followed by an
+  executive summary pass. Bypasses the single-call word ceiling for complex topics.
 """
 
 from __future__ import annotations
@@ -14,10 +16,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import BaseModel, Field
 
-from research_agent.state import Source
+from research_agent.state import Source, SubtopicSummary
 
 if TYPE_CHECKING:
-    from research_agent.state import ResearchState, SubtopicSummary
+    from research_agent.state import ResearchState
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -44,6 +46,22 @@ class SynthesisOutput(BaseModel):
         default_factory=list,
         description="Cited sources used in the report.",
     )
+
+
+class SectionOutput(BaseModel):
+    """Structured output for a single serial synthesis section."""
+
+    section_title: str = Field(description="Section heading.")
+    section_body: str = Field(description="Markdown body for the section.")
+
+
+class ExecutiveSummaryOutput(BaseModel):
+    """Structured output for the executive summary pass."""
+
+    executive_summary: str = Field(description="2-4 sentence executive summary.")
+    introduction: str = Field(description="Background/introduction paragraph.")
+    conclusion: str = Field(description="Conclusion with key takeaways.")
+    title: str = Field(description="Report title.")
 
 
 # ---------------------------------------------------------------------------
@@ -281,19 +299,237 @@ async def _synthesize_report(
 
 
 # ---------------------------------------------------------------------------
+# Serial synthesis
+# ---------------------------------------------------------------------------
+
+_SECTION_JSON_INSTRUCTION = (
+    '\n\nRespond with ONLY a JSON object: '
+    '{"section_title": "<title>", "section_body": "<markdown body>"}'
+)
+
+_EXEC_SUMMARY_JSON_INSTRUCTION = (
+    '\n\nRespond with ONLY a JSON object: '
+    '{"executive_summary": "<summary>", "introduction": "<intro>", '
+    '"conclusion": "<conclusion>", "title": "<report title>"}'
+)
+
+_DEFAULT_SERIAL_THRESHOLD = 3
+
+
+async def _synthesize_section(
+    query: str,
+    summary: SubtopicSummary,
+    citation_index: dict[str, int],
+    section_number: int,
+    total_sections: int,
+    prior_sections: list[str],
+) -> SectionOutput:
+    """Generate a single report section for one subtopic.
+
+    Args:
+        query: Original research query.
+        summary: The subtopic summary to synthesize.
+        citation_index: Global URL-to-number citation map.
+        section_number: 1-based index of this section.
+        total_sections: Total number of sections being generated.
+        prior_sections: Titles and brief summaries of sections already generated.
+
+    Returns:
+        A ``SectionOutput`` with the section title and body.
+    """
+    import litellm
+
+    from research_agent.models import _extract_json
+
+    prompt_templates = _load_prompt()
+
+    # Build section-specific context with citation references
+    citations = [
+        f"[Source {citation_index[url]}]"
+        for url in summary.source_urls
+        if url in citation_index
+    ]
+    citation_str = " ".join(citations) if citations else ""
+    findings = "\n".join(f"- {f}" for f in summary.key_findings)
+    section_context = f"{summary.summary}\n\n**Key Findings:**\n{findings}"
+    if citation_str:
+        section_context += f"\n\nAvailable sources: {citation_str}"
+
+    prior_context = "\n".join(prior_sections) if prior_sections else "None (this is the first section)."
+
+    system_prompt = prompt_templates["section_system"] + _SECTION_JSON_INSTRUCTION
+    user_prompt = prompt_templates["section_user"].format(
+        query=query,
+        section_number=section_number,
+        total_sections=total_sections,
+        subtopic_question=summary.sub_question or f"Subtopic {summary.subtopic_id}",
+        section_context=section_context,
+        prior_context=prior_context,
+    )
+
+    response = await litellm.acompletion(
+        model="anthropic/claude-sonnet-4-5-20250929",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=4096,
+        temperature=0.1,
+    )
+
+    content = response.choices[0].message.content
+    data = _extract_json(content)
+    return SectionOutput(**data)
+
+
+async def _synthesize_executive_summary(
+    query: str,
+    sections_text: str,
+    citation_legend: str,
+) -> ExecutiveSummaryOutput:
+    """Generate the executive summary, introduction, and conclusion.
+
+    Called after all individual sections have been generated in serial mode.
+
+    Args:
+        query: Original research query.
+        sections_text: All generated sections concatenated.
+        citation_legend: The citation legend text.
+
+    Returns:
+        An ``ExecutiveSummaryOutput`` with the framing content.
+    """
+    import litellm
+
+    from research_agent.models import _extract_json
+
+    prompt_templates = _load_prompt()
+
+    system_prompt = prompt_templates["executive_summary_system"] + _EXEC_SUMMARY_JSON_INSTRUCTION
+    user_prompt = prompt_templates["executive_summary_user"].format(
+        query=query,
+        sections_text=sections_text,
+        citation_legend=citation_legend,
+    )
+
+    response = await litellm.acompletion(
+        model="anthropic/claude-sonnet-4-5-20250929",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=4096,
+        temperature=0.1,
+    )
+
+    content = response.choices[0].message.content
+    data = _extract_json(content)
+    return ExecutiveSummaryOutput(**data)
+
+
+async def _synthesize_serial(
+    query: str,
+    summaries: list[SubtopicSummary],
+    citation_index: dict[str, int],
+) -> SynthesisOutput:
+    """Generate a report using serial section-by-section synthesis.
+
+    Generates each section individually with running context of prior
+    sections, then produces an executive summary, introduction, and
+    conclusion in a final pass. Assembles everything into a complete report.
+
+    Args:
+        query: Original research query.
+        summaries: Per-subtopic summaries to synthesize.
+        citation_index: Global URL-to-number citation map.
+
+    Returns:
+        A ``SynthesisOutput`` with the assembled report.
+    """
+    total_sections = len(summaries)
+    generated_sections: list[SectionOutput] = []
+    prior_summaries: list[str] = []
+
+    for i, summary in enumerate(summaries):
+        section = await _synthesize_section(
+            query=query,
+            summary=summary,
+            citation_index=citation_index,
+            section_number=i + 1,
+            total_sections=total_sections,
+            prior_sections=list(prior_summaries),
+        )
+        generated_sections.append(section)
+        prior_summaries.append(f"- Section {i + 1}: {section.section_title}")
+
+        logger.debug(
+            "serial_section_complete",
+            section_number=i + 1,
+            title=section.section_title,
+        )
+
+    # Assemble sections text
+    sections_parts: list[str] = []
+    for section in generated_sections:
+        sections_parts.append(f"## {section.section_title}\n\n{section.section_body}")
+    sections_text = "\n\n".join(sections_parts)
+
+    # Build citation legend for the exec summary prompt
+    legend_lines = [
+        f"[Source {num}]: {url}"
+        for url, num in sorted(citation_index.items(), key=lambda x: x[1])
+    ]
+    citation_legend = "\n".join(legend_lines)
+
+    # Generate executive summary + intro + conclusion
+    exec_output = await _synthesize_executive_summary(
+        query=query,
+        sections_text=sections_text,
+        citation_legend=citation_legend,
+    )
+
+    # Assemble the full report
+    report_parts = [
+        f"# {exec_output.title}",
+        f"## Executive Summary\n\n{exec_output.executive_summary}",
+        f"## Introduction\n\n{exec_output.introduction}",
+        sections_text,
+        f"## Conclusion\n\n{exec_output.conclusion}",
+    ]
+    report = "\n\n".join(report_parts)
+
+    logger.info(
+        "serial_synthesis_complete",
+        num_sections=len(generated_sections),
+        word_count=len(report.split()),
+    )
+
+    return SynthesisOutput(
+        title=exec_output.title,
+        report=report,
+        sources=[],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Node
 # ---------------------------------------------------------------------------
 
 
-async def synthesize_node(state: ResearchState) -> dict[str, Any]:
+async def synthesize_node(
+    state: ResearchState,
+    serial_threshold: int = _DEFAULT_SERIAL_THRESHOLD,
+) -> dict[str, Any]:
     """Synthesize all summaries into a final research report.
 
-    Builds a citation index, formats context with numbered references,
-    calls the STRATEGIC tier LLM for one-shot synthesis, validates
-    citations, and appends a Sources section if the LLM omitted one.
+    Chooses between single-pass and serial synthesis based on the number
+    of subtopic summaries. Serial mode generates each section individually
+    with running context, then adds an executive summary. Falls back to
+    single-pass if serial mode fails.
 
     Args:
         state: Current research state with ``subtopic_summaries`` populated.
+        serial_threshold: Use serial synthesis when subtopic count exceeds this.
 
     Returns:
         Partial state update with ``final_report``, ``sources``,
@@ -316,11 +552,29 @@ async def synthesize_node(state: ResearchState) -> dict[str, Any]:
     citation_index = _build_citation_index(summaries)
     logger.info("citation_index_built", num_sources=len(citation_index))
 
-    # Format context with citations
-    context = _format_context_with_citations(summaries, citation_index)
+    # Choose synthesis mode
+    use_serial = len(summaries) > serial_threshold
 
     try:
-        result = await _synthesize_report(query, context)
+        if use_serial:
+            logger.info(
+                "serial_synthesis_selected",
+                num_summaries=len(summaries),
+                threshold=serial_threshold,
+            )
+            try:
+                result = await _synthesize_serial(query, summaries, citation_index)
+            except Exception as serial_exc:
+                logger.warning(
+                    "serial_synthesis_fallback",
+                    error=str(serial_exc),
+                )
+                # Fall back to single-pass on serial failure
+                context = _format_context_with_citations(summaries, citation_index)
+                result = await _synthesize_report(query, context)
+        else:
+            context = _format_context_with_citations(summaries, citation_index)
+            result = await _synthesize_report(query, context)
     except Exception as exc:
         logger.error("synthesize_failed", error=str(exc))
         return {
@@ -364,6 +618,7 @@ async def synthesize_node(state: ResearchState) -> dict[str, Any]:
         word_count=word_count,
         num_sources=len(source_models),
         citation_warnings=len(citation_warnings),
+        mode="serial" if use_serial else "single-pass",
     )
 
     return {
