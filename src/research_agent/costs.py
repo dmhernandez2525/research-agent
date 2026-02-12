@@ -221,6 +221,18 @@ class BudgetTracker:
             current_tier=self._current_tier(pct),
         )
 
+    def cost_per_step(self) -> dict[str, float]:
+        """Aggregate cost by graph step name for report metadata.
+
+        Returns:
+            Mapping of step name to total cost in USD for that step.
+        """
+        breakdown: dict[str, float] = {}
+        for record in self._records:
+            key = record.step_name or "unknown"
+            breakdown[key] = breakdown.get(key, 0.0) + record.cost_usd
+        return {k: round(v, 6) for k, v in breakdown.items()}
+
     @staticmethod
     def _current_tier(used_percent: float) -> DegradationTier:
         """Determine the current degradation tier.
