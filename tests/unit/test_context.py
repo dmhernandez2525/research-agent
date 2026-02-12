@@ -537,8 +537,101 @@ class TestGetContextWindow:
 # ---------------------------------------------------------------------------
 
 
+class TestFormatForApi:
+    """format_for_api assembles cache-stable API payloads."""
+
+    def test_returns_all_keys(self) -> None:
+        mgr = ContextManager()
+        result = mgr.format_for_api("You are a researcher.")
+        assert "system" in result
+        assert "tools" in result
+        assert "messages" in result
+
+    def test_system_block_structure(self) -> None:
+        mgr = ContextManager()
+        result = mgr.format_for_api("System prompt text.")
+        system = result["system"]
+        assert len(system) == 1
+        assert system[0]["type"] == "text"
+        assert system[0]["text"] == "System prompt text."
+
+    def test_includes_tool_definitions(self) -> None:
+        mgr = ContextManager()
+        tools = [{"name": "search", "parameters": {"query": "string"}}]
+        result = mgr.format_for_api("test", tool_definitions=tools)
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["name"] == "search"
+
+    def test_empty_tools_by_default(self) -> None:
+        mgr = ContextManager()
+        result = mgr.format_for_api("test")
+        assert result["tools"] == []
+
+    def test_includes_conversation(self) -> None:
+        mgr = ContextManager()
+        mgr.add_turn(Turn(role="user", content="Hello"))
+        mgr.add_turn(Turn(role="assistant", content="Hi"))
+        result = mgr.format_for_api("test")
+        assert len(result["messages"]) == 2
+        assert result["messages"][0]["content"] == "Hello"
+
+    def test_messages_include_masked_content(self) -> None:
+        mgr = ContextManager(window_size=1, max_tokens=120)
+        mgr.add_turn(Turn(role="tool", content="data", token_count=100, step_name="search"))
+        mgr.add_turn(Turn(role="user", content="next", token_count=10))
+        mgr.compact()
+        result = mgr.format_for_api("test")
+        assert "[masked tool output" in result["messages"][0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Window report
+# ---------------------------------------------------------------------------
+
+
+class TestWindowReport:
+    """window_report provides diagnostic context state."""
+
+    def test_empty_report(self) -> None:
+        mgr = ContextManager(max_tokens=1000)
+        report = mgr.window_report()
+        assert report["turn_count"] == 0
+        assert report["total_tokens"] == 0
+        assert report["max_tokens"] == 1000
+        assert report["utilization_percent"] == 0.0
+        assert report["active_stage"] == "NONE"
+        assert report["masked_count"] == 0
+        assert report["unmasked_count"] == 0
+
+    def test_populated_report(self) -> None:
+        mgr = ContextManager(window_size=2, max_tokens=625)
+        for i in range(5):
+            mgr.add_turn(Turn(role="tool", content="d", token_count=100, step_name=f"s-{i}"))
+        mgr.compact()
+        report = mgr.window_report()
+        assert report["turn_count"] == 5
+        assert report["masked_count"] == 3
+        assert report["unmasked_count"] == 2
+        assert report["window_size"] == 2
+
+    def test_report_keys(self) -> None:
+        mgr = ContextManager()
+        report = mgr.window_report()
+        expected_keys = {
+            "turn_count", "total_tokens", "max_tokens",
+            "utilization_percent", "active_stage",
+            "masked_count", "unmasked_count", "window_size",
+        }
+        assert set(report.keys()) == expected_keys
+
+
+# ---------------------------------------------------------------------------
+# Clear
+# ---------------------------------------------------------------------------
+
+
 class TestClear:
-    """clear() removes all turns."""
+    """clear() removes all turns and resets state."""
 
     def test_clear_empties_turns(self) -> None:
         mgr = ContextManager()
@@ -556,6 +649,14 @@ class TestClear:
         mgr.add_turn(Turn(role="user", content="new", token_count=30))
         assert mgr.turn_count == 1
         assert mgr.total_tokens == 30
+
+    def test_clear_resets_compaction_state(self) -> None:
+        mgr = ContextManager(max_tokens=50)
+        mgr.add_turn(Turn(role="user", content="big", token_count=100))
+        # Should have triggered compaction attempt
+        mgr.clear()
+        assert mgr._compaction_pending is False
+        assert mgr._turns_since_compaction == 0
 
 
 # ---------------------------------------------------------------------------
