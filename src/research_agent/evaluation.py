@@ -10,6 +10,10 @@ Dimensions and weights:
 
 from __future__ import annotations
 
+import json
+import textwrap
+from typing import Any, Protocol
+
 import structlog
 from pydantic import BaseModel, Field
 
@@ -85,6 +89,40 @@ Reports below this trigger up to 2 auto-revision cycles per SDD-005."""
 MAX_REVISION_CYCLES: int = 2
 """Maximum number of auto-revision attempts for reports below threshold."""
 
+# Per-dimension descriptions used in the evaluation prompt.
+_DIMENSION_DESCRIPTIONS: dict[str, str] = {
+    "Factual Accuracy": (
+        "Are claims supported by the cited sources? Are there any "
+        "unsupported assertions or factual errors?"
+    ),
+    "Completeness": (
+        "Does the report address all aspects of the research query? "
+        "Are there significant gaps in coverage?"
+    ),
+    "Coverage": (
+        "Does the report draw on a sufficient breadth of sources? "
+        "Are multiple perspectives represented?"
+    ),
+    "Coherence": (
+        "Is the report well-organized with clear logical flow? "
+        "Are transitions smooth and arguments well-structured?"
+    ),
+    "Bias": (
+        "Does the report present a balanced perspective? "
+        "Are opposing viewpoints fairly represented?"
+    ),
+}
+
+
+class LLMCallable(Protocol):
+    """Protocol for an async callable that sends a prompt to an LLM."""
+
+    async def __call__(self, prompt: str) -> str: ...
+
+
+class EvaluationParseError(Exception):
+    """Raised when the LLM evaluation response cannot be parsed."""
+
 
 # ---------------------------------------------------------------------------
 # Evaluator
@@ -121,36 +159,198 @@ class ReportEvaluator:
     ) -> str:
         """Build the evaluation prompt for the LLM judge.
 
+        Constructs a prompt that asks the LLM to score the report across
+        all configured dimensions on a 1-5 scale, returning structured
+        JSON with per-dimension scores, reasoning, and recommendations.
+
         Args:
             query: The original research query.
             report: The generated report text.
 
         Returns:
             Formatted evaluation prompt string.
+        """
+        dim_lines: list[str] = []
+        for name, weight in self.dimensions:
+            desc = _DIMENSION_DESCRIPTIONS.get(name, "Evaluate this dimension.")
+            pct = f"{weight:.0%}"
+            dim_lines.append(f"  - {name} (weight: {pct}): {desc}")
+
+        dimensions_block = "\n".join(dim_lines)
+
+        return textwrap.dedent("""\
+            You are an expert research report evaluator. Score the following
+            report on each dimension using a 1-5 scale where:
+              1 = Very Poor, 2 = Poor, 3 = Adequate, 4 = Good, 5 = Excellent
+
+            Dimensions to evaluate:
+            {dimensions}
+
+            Research Query:
+            {query}
+
+            Report:
+            {report}
+
+            Respond with ONLY valid JSON in this exact format (no markdown fencing):
+            {{
+              "dimensions": [
+                {{
+                  "dimension": "<dimension name>",
+                  "score": <1-5>,
+                  "reasoning": "<1-2 sentence explanation>"
+                }}
+              ],
+              "overall_reasoning": "<1-2 sentence overall assessment>",
+              "recommendations": ["<specific improvement 1>", "<specific improvement 2>"]
+            }}
+        """).format(
+            dimensions=dimensions_block,
+            query=query,
+            report=report,
+        )
+
+    def _parse_evaluation_response(
+        self,
+        raw: str,
+        query: str,
+    ) -> EvaluationResult:
+        """Parse the LLM's JSON response into an EvaluationResult.
+
+        Validates that every configured dimension has a score and that
+        scores are within the 1-5 range.
+
+        Args:
+            raw: Raw JSON string from the LLM.
+            query: The original research query (for the result).
+
+        Returns:
+            Parsed and validated EvaluationResult.
 
         Raises:
-            NotImplementedError: Stub -- full implementation pending.
+            EvaluationParseError: If the response is malformed or missing
+                required fields.
         """
-        raise NotImplementedError("_build_evaluation_prompt is not yet implemented")
+        # Strip markdown code fences if present
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            # Remove opening fence (e.g., ```json) and closing fence (```)
+            lines = [ln for ln in lines if not ln.strip().startswith("```")]
+            cleaned = "\n".join(lines)
+
+        try:
+            data: dict[str, Any] = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise EvaluationParseError(
+                f"LLM response is not valid JSON: {exc}"
+            ) from exc
+
+        if "dimensions" not in data:
+            raise EvaluationParseError("Missing 'dimensions' key in response")
+
+        # Build a weight lookup from configured dimensions
+        weight_map = {name: weight for name, weight in self.dimensions}
+
+        dim_scores: list[DimensionScore] = []
+        for entry in data["dimensions"]:
+            name = entry.get("dimension", "")
+            score_val = entry.get("score")
+            reasoning = entry.get("reasoning", "")
+
+            if name not in weight_map:
+                logger.warning(
+                    "unexpected_dimension_in_response",
+                    dimension=name,
+                )
+                continue
+
+            if score_val is None:
+                raise EvaluationParseError(
+                    f"Missing score for dimension '{name}'"
+                )
+
+            score_float = float(score_val)
+            score_float = max(1.0, min(5.0, score_float))
+
+            dim_scores.append(
+                DimensionScore(
+                    dimension=name,
+                    score=score_float,
+                    weight=weight_map[name],
+                    reasoning=reasoning,
+                )
+            )
+
+        # Check for missing dimensions
+        returned_names = {d.dimension for d in dim_scores}
+        for name, weight in self.dimensions:
+            if name not in returned_names:
+                logger.warning(
+                    "missing_dimension_in_response",
+                    dimension=name,
+                )
+                dim_scores.append(
+                    DimensionScore(
+                        dimension=name,
+                        score=1.0,
+                        weight=weight,
+                        reasoning="Not scored by evaluator; defaulted to 1.0.",
+                    )
+                )
+
+        overall = self.compute_overall_score(dim_scores)
+
+        return EvaluationResult(
+            query=query,
+            dimensions=dim_scores,
+            overall_score=round(overall, 2),
+            overall_reasoning=data.get("overall_reasoning", ""),
+            recommendations=data.get("recommendations", []),
+        )
 
     async def evaluate(
         self,
         query: str,
         report: str,
+        llm_callable: LLMCallable | None = None,
     ) -> EvaluationResult:
         """Evaluate a research report using LLM-as-judge.
+
+        Builds an evaluation prompt, sends it to the LLM, and parses the
+        structured JSON response into scored dimensions.
 
         Args:
             query: The original research query.
             report: The generated report text.
+            llm_callable: Async callable that sends a prompt to an LLM
+                and returns the response string. Required for now; later
+                phases will wire this to the ModelRouter automatically.
 
         Returns:
             An ``EvaluationResult`` with per-dimension and overall scores.
 
         Raises:
-            NotImplementedError: Stub -- full implementation pending.
+            EvaluationParseError: If the LLM response cannot be parsed.
+            ValueError: If no llm_callable is provided.
         """
-        raise NotImplementedError("evaluate is not yet implemented")
+        if llm_callable is None:
+            msg = "llm_callable is required (ModelRouter integration is a later phase)"
+            raise ValueError(msg)
+
+        prompt = self._build_evaluation_prompt(query, report)
+        logger.info("evaluation_prompt_built", query=query, prompt_len=len(prompt))
+
+        raw_response = await llm_callable(prompt)
+        logger.debug("evaluation_response_received", response_len=len(raw_response))
+
+        result = self._parse_evaluation_response(raw_response, query)
+        logger.info(
+            "evaluation_complete",
+            overall_score=result.overall_score,
+            passed=result.overall_score >= QUALITY_THRESHOLD,
+        )
+        return result
 
     @staticmethod
     def compute_overall_score(dimensions: list[DimensionScore]) -> float:
@@ -160,7 +360,7 @@ class ReportEvaluator:
             dimensions: List of scored dimensions.
 
         Returns:
-            Weighted average score (0-10).
+            Weighted average score (1-5 range when weights sum to 1.0).
         """
         if not dimensions:
             return 0.0
