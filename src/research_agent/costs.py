@@ -257,10 +257,22 @@ class BudgetTracker:
 # ---------------------------------------------------------------------------
 
 
+_TIER_ORDER: list[DegradationTier] = [
+    DegradationTier.FULL,
+    DegradationTier.REDUCED,
+    DegradationTier.CACHED,
+    DegradationTier.PARTIAL,
+]
+
+_RECOVERY_THRESHOLD = 75.0  # Recover upward when budget usage drops below 75%
+
+
 class DegradationManager:
     """Manages capability degradation based on budget tier.
 
-    Provides model fallback chains and feature flags per tier.
+    Provides model fallback chains, feature flags per tier, and
+    recovery logic that attempts to upgrade the tier when budget
+    pressure eases.
 
     Attributes:
         tracker: The underlying budget tracker.
@@ -291,15 +303,82 @@ class DegradationManager:
             tracker: Budget tracker instance.
         """
         self.tracker = tracker
+        self._forced_tier: DegradationTier | None = None
+        self._last_tier: DegradationTier = DegradationTier.FULL
 
     @property
     def tier(self) -> DegradationTier:
         """Return the current degradation tier.
 
+        Uses the forced tier if set, otherwise computes from budget.
+        Logs tier transitions when the active tier changes.
+
         Returns:
             Active tier.
         """
-        return self.tracker.status().current_tier
+        if self._forced_tier is not None:
+            active = self._forced_tier
+        else:
+            active = self.tracker.status().current_tier
+
+        if active != self._last_tier:
+            logger.info(
+                "tier_transition",
+                from_tier=self._last_tier.value,
+                to_tier=active.value,
+                budget_used_percent=self.tracker.status().budget_used_percent,
+            )
+            self._last_tier = active
+
+        return active
+
+    def force_degrade(self, tier: DegradationTier | None = None) -> None:
+        """Force the manager to a specific (lower) degradation tier.
+
+        Used when external conditions (e.g., repeated API errors) warrant
+        degrading beyond what the budget alone would dictate.
+
+        Args:
+            tier: The tier to force. If None, forces one tier lower
+                than the current tier.
+        """
+        if tier is not None:
+            self._forced_tier = tier
+            logger.info("forced_degradation", tier=tier.value)
+            return
+
+        current_idx = _TIER_ORDER.index(self.tier)
+        if current_idx < len(_TIER_ORDER) - 1:
+            self._forced_tier = _TIER_ORDER[current_idx + 1]
+            logger.info("forced_degradation", tier=self._forced_tier.value)
+
+    def try_recover(self) -> bool:
+        """Attempt to recover upward one tier.
+
+        Recovery succeeds if the budget usage is below the recovery
+        threshold (75%). Only applies when the tier has been forced;
+        if running on computed tiers, recovery is automatic.
+
+        Returns:
+            True if recovery occurred, False otherwise.
+        """
+        if self._forced_tier is None:
+            return False
+
+        status = self.tracker.status()
+        if status.budget_used_percent >= _RECOVERY_THRESHOLD:
+            return False
+
+        current_idx = _TIER_ORDER.index(self._forced_tier)
+        if current_idx <= 1:
+            # Recovering to FULL clears the forced override entirely
+            self._forced_tier = None
+            logger.info("tier_recovered", to_tier=DegradationTier.FULL.value)
+            return True
+
+        self._forced_tier = _TIER_ORDER[current_idx - 1]
+        logger.info("tier_recovered", to_tier=self._forced_tier.value)
+        return True
 
     def get_model(self) -> str:
         """Return the preferred model for the current tier.
