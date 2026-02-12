@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 _TRASH_DIR = os.path.expanduser("~/.Trash")
+_CURRENT_SCHEMA_VERSION = 2
 
 
 def generate_run_id() -> str:
@@ -49,6 +50,35 @@ def checkpoint_id_for_step(step_index: int) -> str:
         A formatted checkpoint identifier string.
     """
     return f"checkpoint_{step_index:04d}"
+
+
+# ---------------------------------------------------------------------------
+# Schema migration
+# ---------------------------------------------------------------------------
+
+
+def migrate_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Migrate checkpoint state to the current schema version.
+
+    Applies additive-only migrations (new fields with defaults) so that
+    old checkpoints are compatible with the current code. Never removes
+    fields from the state.
+
+    Args:
+        state: The loaded state dict (may be from an older schema version).
+
+    Returns:
+        The migrated state dict at ``_CURRENT_SCHEMA_VERSION``.
+    """
+    version = state.get("_schema_version", 1)
+
+    if version < 2:
+        # v2: added report_metadata and error_log fields
+        state.setdefault("report_metadata", {})
+        state.setdefault("error_log", [])
+
+    state["_schema_version"] = _CURRENT_SCHEMA_VERSION
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +108,9 @@ class CheckpointMetadata(BaseModel):
     )
     step_index: int = Field(default=0, description="Graph step index at save time.")
     step_name: str = Field(default="", description="Graph node name at save time.")
+    schema_version: int = Field(
+        default=_CURRENT_SCHEMA_VERSION, description="Schema version at save time."
+    )
     sha256: str = Field(
         default="", description="SHA-256 hex digest of the state payload."
     )
@@ -166,6 +199,7 @@ class CheckpointManager:
         Raises:
             CheckpointError: If the save operation fails.
         """
+        state["_schema_version"] = _CURRENT_SCHEMA_VERSION
         payload = json.dumps(state, default=str, sort_keys=True).encode("utf-8")
         checksum = self._compute_checksum(payload)
 
@@ -226,6 +260,7 @@ class CheckpointManager:
                 )
 
         state: dict[str, Any] = json.loads(payload)
+        state = migrate_state(state)
         logger.info("checkpoint_loaded", checkpoint_id=checkpoint_id)
         return state
 
