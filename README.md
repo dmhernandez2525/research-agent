@@ -23,8 +23,32 @@ uv tool install research-agent
 export ANTHROPIC_API_KEY=your-key
 export TAVILY_API_KEY=your-key
 
+# Run health diagnostics
+research-agent doctor
+
 # Run research
 research-agent "Best practices for building SaaS applications in 2026"
+```
+
+## Docker
+
+```bash
+# Build and run in container
+docker compose up --build
+
+# Run an ad-hoc query
+docker compose run --rm research-agent run "AI agent evaluation framework"
+```
+
+## API Server
+
+```bash
+# Start API server
+research-agent serve --port 8000
+
+# Manage API keys
+research-agent api-keys --create local-dev --admin
+research-agent api-keys --list
 ```
 
 ## How It Works

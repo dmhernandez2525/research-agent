@@ -8,7 +8,7 @@ nested delimiter ``__`` for overriding sub-model fields.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import structlog
 from pydantic import BaseModel, Field, ValidationError
@@ -110,6 +110,53 @@ class CheckpointSettings(BaseModel):
     )
 
 
+class RecoveryNodePolicySettings(BaseModel):
+    """Per-node retry/backoff policy overrides."""
+
+    attempts: int = Field(default=3, ge=1, le=10)
+    backoff_initial_seconds: float = Field(default=0.5, gt=0.0)
+    backoff_max_seconds: float = Field(default=8.0, gt=0.0)
+
+
+class RecoverySettings(BaseModel):
+    """Error recovery orchestration settings."""
+
+    enabled: bool = True
+    default_policy: RecoveryNodePolicySettings = Field(
+        default_factory=RecoveryNodePolicySettings
+    )
+    node_policies: dict[str, RecoveryNodePolicySettings] = Field(default_factory=dict)
+    circuit_breaker_threshold: int = Field(default=3, ge=1, le=20)
+    circuit_breaker_cooldown_seconds: int = Field(default=120, ge=1, le=3600)
+    dead_letter_max_entries: int = Field(default=200, ge=1, le=5000)
+
+
+class APISettings(BaseModel):
+    """FastAPI server settings."""
+
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: int = Field(default=8000, ge=1, le=65535)
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    max_concurrent_sessions: int = Field(default=3, ge=1, le=100)
+    queue_limit: int = Field(default=50, ge=0, le=10_000)
+    api_key_file: Path = Path("./data/api_keys.json")
+    frontend_dist_dir: Path = Path("./frontend/dist")
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=10_000)
+    webhook_url: str | None = None
+    slack_webhook_url: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    notify_on: list[Literal["completion", "error", "budget_warning"]] = Field(
+        default_factory=lambda: cast(
+            "list[Literal['completion', 'error', 'budget_warning']]",
+            ["completion", "error"],
+        )
+    )
+
+
 class ReportSettings(BaseModel):
     """Report output configuration."""
 
@@ -171,6 +218,8 @@ class Settings(BaseSettings):
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     costs: CostSettings = Field(default_factory=CostSettings)
     checkpoints: CheckpointSettings = Field(default_factory=CheckpointSettings)
+    recovery: RecoverySettings = Field(default_factory=RecoverySettings)
+    api: APISettings = Field(default_factory=APISettings)
     report: ReportSettings = Field(default_factory=ReportSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 

@@ -1,0 +1,31 @@
+services:
+  research-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: research-agent:latest
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      RESEARCH_AGENT_VECTOR_STORE__PERSIST_DIRECTORY: /app/data/chromadb
+      RESEARCH_AGENT_CHECKPOINTS__DIRECTORY: /app/data/checkpoints
+      RESEARCH_AGENT_REPORT__OUTPUT_DIR: /app/reports
+    volumes:
+      - research_agent_data:/app/data
+      - research_agent_reports:/app/reports
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "research-agent", "doctor", "--quiet", "--no-api-probes"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 15s
+    stdin_open: true
+    tty: true
+
+volumes:
+  research_agent_data:
+  research_agent_reports:

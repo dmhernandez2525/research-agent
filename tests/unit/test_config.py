@@ -11,11 +11,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from research_agent.config import (
+    APISettings,
     CheckpointSettings,
     CostSettings,
     EmbeddingSettings,
     LLMSettings,
     LoggingSettings,
+    RecoverySettings,
     ReportSettings,
     ScrapingSettings,
     SearchSettings,
@@ -99,6 +101,17 @@ class TestCheckpointSettings:
         assert s.max_checkpoints == 5
 
 
+class TestAPISettings:
+    """APISettings defaults."""
+
+    def test_default_values(self) -> None:
+        s = APISettings()
+        assert s.port == 8000
+        assert s.frontend_dist_dir.name == "dist"
+        assert s.max_concurrent_sessions == 3
+        assert s.rate_limit_per_minute == 60
+
+
 class TestReportSettings:
     """ReportSettings defaults."""
 
@@ -152,6 +165,8 @@ class TestSettings:
         assert isinstance(s.scraping, ScrapingSettings)
         assert isinstance(s.costs, CostSettings)
         assert isinstance(s.checkpoints, CheckpointSettings)
+        assert isinstance(s.recovery, RecoverySettings)
+        assert isinstance(s.api, APISettings)
         assert isinstance(s.report, ReportSettings)
         assert isinstance(s.logging, LoggingSettings)
         assert isinstance(s.embedding, EmbeddingSettings)

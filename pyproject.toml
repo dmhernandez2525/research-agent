@@ -21,6 +21,7 @@ dependencies = [
     "litellm>=1.50,<2",
     "langgraph>=1.0,<2",
     "chromadb>=1.4,<2",
+    "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "trafilatura>=2.0,<3",
     "pydantic>=2.10,<3",
@@ -30,9 +31,19 @@ dependencies = [
     "tenacity>=8.1,<10",
     "tiktoken>=0.8,<1",
     "typer>=0.15,<1",
+    "uvicorn>=0.34,<1",
     "tavily-python>=0.5,<1",
     "diskcache>=5.6,<6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/dmhernandez2525/research-agent"
+Repository = "https://github.com/dmhernandez2525/research-agent"
+Documentation = "https://github.com/dmhernandez2525/research-agent#readme"
+Issues = "https://github.com/dmhernandez2525/research-agent/issues"
+
+[project.scripts]
+research-agent = "research_agent.cli:main"
 
 [project.optional-dependencies]
 local = ["sentence-transformers>=3.3,<4", "torch>=2.5,<3"]
@@ -41,7 +52,13 @@ pdf = ["pymupdf>=1.25,<2"]
 google = []
 
 [dependency-groups]
-dev = ["ruff>=0.9,<1", "mypy>=1.14,<2", "pre-commit>=4.0,<5", "types-PyYAML>=6,<7"]
+dev = [
+    "ruff>=0.9,<1",
+    "mypy>=1.14,<2",
+    "pre-commit>=4.0,<5",
+    "types-PyYAML>=6,<7",
+    "twine>=5,<7",
+]
 test = [
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.25,<1",
@@ -49,9 +66,6 @@ test = [
     "respx>=0.22,<1",
     "vcrpy>=8.1.1",
 ]
-
-[project.scripts]
-research-agent = "research_agent.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -108,8 +122,16 @@ module = [
     "pymupdf.*",
     "diskcache",
     "diskcache.*",
+    "fastapi",
+    "fastapi.*",
+    "uvicorn",
+    "uvicorn.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["research_agent.api.app"]
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

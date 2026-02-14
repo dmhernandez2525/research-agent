@@ -17,6 +17,7 @@ from research_agent.nodes.scraper import scrape_node
 from research_agent.nodes.searcher import search_node
 from research_agent.nodes.summarizer import summarize_node
 from research_agent.nodes.synthesizer import synthesize_node
+from research_agent.recovery import RecoveryOrchestrator
 from research_agent.state import ResearchState
 
 if TYPE_CHECKING:
@@ -107,12 +108,25 @@ def build_graph(settings: Settings) -> StateGraph[Any]:
     """
     graph = StateGraph(ResearchState)
 
+    orchestrator: RecoveryOrchestrator | None = None
+    if settings.recovery.enabled:
+        orchestrator = RecoveryOrchestrator.from_settings(settings.recovery)
+        logger.info(
+            "recovery_orchestrator_enabled",
+            circuit_breaker_threshold=settings.recovery.circuit_breaker_threshold,
+        )
+
+    def wrap_node(node_name: str, node_fn: Any) -> Any:
+        if orchestrator is None:
+            return node_fn
+        return orchestrator.wrap(node_name, node_fn)
+
     # Add nodes
-    graph.add_node("plan", plan_node)
-    graph.add_node("search", search_node)
-    graph.add_node("scrape", scrape_node)
-    graph.add_node("summarize", summarize_node)
-    graph.add_node("synthesize", synthesize_node)
+    graph.add_node("plan", wrap_node("plan", plan_node))
+    graph.add_node("search", wrap_node("search", search_node))
+    graph.add_node("scrape", wrap_node("scrape", scrape_node))
+    graph.add_node("summarize", wrap_node("summarize", summarize_node))
+    graph.add_node("synthesize", wrap_node("synthesize", synthesize_node))
 
     # Set entry point
     graph.set_entry_point("plan")
