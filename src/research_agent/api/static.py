@@ -1,0 +1,37 @@
+"""Frontend static build serving helpers for FastAPI."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+_RESERVED_PREFIXES = ("api", "docs", "openapi.json", "ws", "health")
+
+
+def mount_frontend(app: FastAPI, dist_dir: Path) -> None:
+    """Mount built frontend files and SPA fallback routes when available."""
+    index_path = dist_dir / "index.html"
+    if not index_path.exists():
+        return
+
+    assets_dir = dist_dir / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    async def frontend_index() -> FileResponse:
+        return FileResponse(index_path)
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def frontend_routes(path: str) -> FileResponse:
+        if path in _RESERVED_PREFIXES or path.startswith(("api/", "ws/")):
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        candidate = dist_dir / path
+        if candidate.is_file():
+            return FileResponse(candidate)
+
+        return FileResponse(index_path)
