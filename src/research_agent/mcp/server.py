@@ -64,8 +64,7 @@ class MCPServer:
         method = request.method
 
         if method == "initialize":
-            params = MCPInitializeParams.model_validate(request.params)
-            _ = params
+            _ = MCPInitializeParams.model_validate(request.params)
             info = MCPServerInfo(
                 version=__version__,
                 capabilities=self.capabilities(),
@@ -74,24 +73,20 @@ class MCPServer:
                 "protocolVersion": "2024-11-05",
                 "serverInfo": info.model_dump(),
             }
-
-        if method == "tools/list":
+        elif method == "tools/list":
             return {"tools": [tool.model_dump() for tool in self._tools.list_tools()]}
-
-        if method == "tools/call":
-            params = MCPToolCallParams.model_validate(request.params)
-            return {"content": self._tools.call_tool(params)}
-
-        if method == "resources/list":
-            params = MCPResourceListParams.model_validate(request.params)
+        elif method == "tools/call":
+            tool_params = MCPToolCallParams.model_validate(request.params)
+            return {"content": self._tools.call_tool(tool_params)}
+        elif method == "resources/list":
+            list_params = MCPResourceListParams.model_validate(request.params)
             return self._resources.list_resources(
-                uri_prefix=params.uri_prefix,
-                page=params.page,
-                page_size=params.page_size,
+                uri_prefix=list_params.uri_prefix,
+                page=list_params.page,
+                page_size=list_params.page_size,
             )
-
-        if method == "resources/read":
-            params = MCPResourceReadParams.model_validate(request.params)
-            return self._resources.read_resource(params)
+        elif method == "resources/read":
+            read_params = MCPResourceReadParams.model_validate(request.params)
+            return self._resources.read_resource(read_params)
 
         raise ValueError(f"Unsupported method: {method}")

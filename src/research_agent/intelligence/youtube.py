@@ -37,12 +37,12 @@ class YouTubeTranscriptExtractor:
 
         chunks = self._chunk_transcript(transcript)
         return VideoTranscriptResult(
-            video_id=metadata.get("id", ""),
-            title=metadata.get("title", ""),
-            channel=metadata.get("channel", ""),
+            video_id=str(metadata.get("id", "")),
+            title=str(metadata.get("title", "")),
+            channel=str(metadata.get("channel", "")),
             duration_seconds=int(metadata.get("duration", 0) or 0),
             views=int(metadata.get("view_count", 0) or 0),
-            language=metadata.get("language", "en"),
+            language=str(metadata.get("language", "en")),
             chunks=chunks,
         )
 
@@ -139,11 +139,11 @@ class YouTubeTranscriptExtractor:
                     )
                 )
             elif line.strip():
-                start = float(len(chunks) * chunk_seconds)
+                start_seconds = float(len(chunks) * chunk_seconds)
                 chunks.append(
                     VideoTranscriptChunk(
-                        start_seconds=start,
-                        end_seconds=start + chunk_seconds,
+                        start_seconds=start_seconds,
+                        end_seconds=start_seconds + chunk_seconds,
                         text=line.strip(),
                     )
                 )

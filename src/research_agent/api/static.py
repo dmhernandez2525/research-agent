@@ -24,11 +24,9 @@ def mount_frontend(app: FastAPI, dist_dir: Path) -> None:
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
 
-    @app.get("/", include_in_schema=False)
     async def frontend_index() -> FileResponse:
         return FileResponse(index_path)
 
-    @app.get("/{path:path}", include_in_schema=False)
     async def frontend_routes(path: str) -> FileResponse:
         if path in _RESERVED_PREFIXES or path.startswith(("api/", "ws/")):
             raise HTTPException(status_code=404, detail="Not Found")
@@ -38,3 +36,11 @@ def mount_frontend(app: FastAPI, dist_dir: Path) -> None:
             return FileResponse(candidate)
 
         return FileResponse(index_path)
+
+    app.add_api_route("/", frontend_index, methods=["GET"], include_in_schema=False)
+    app.add_api_route(
+        "/{path:path}",
+        frontend_routes,
+        methods=["GET"],
+        include_in_schema=False,
+    )
