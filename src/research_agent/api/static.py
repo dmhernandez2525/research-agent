@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+
+if TYPE_CHECKING:
+    from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 _RESERVED_PREFIXES = ("api", "docs", "openapi.json", "ws", "health")
