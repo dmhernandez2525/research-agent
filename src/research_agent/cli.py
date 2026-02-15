@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import select
 import shutil
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -23,8 +25,45 @@ from rich.progress import (
 from rich.table import Table
 
 from research_agent import __version__
+from research_agent.agentprompts.bridge import run_for_project
+from research_agent.agentprompts.registry import ProjectRegistry
+from research_agent.agentprompts.templates import (
+    list_templates,
+    load_template,
+    render_template,
+)
+from research_agent.agentprompts.watch import PromptWatcher
+from research_agent.api.auth import APIKeyStore
+from research_agent.api.server import run_server
 from research_agent.checkpoints import CheckpointManager, generate_run_id
 from research_agent.config import Settings, format_validation_error
+from research_agent.doctor import CheckStatus, run_doctor
+from research_agent.enhance_context import build_project_context
+from research_agent.enhance_engine import (
+    generate_enhancement_report,
+    identify_opportunities,
+    persist_findings,
+    plan_incremental_research,
+)
+from research_agent.enhance_models import OpportunityCategory
+from research_agent.enhance_store import KnowledgeStore as EnhancementKnowledgeStore
+from research_agent.knowledge.io import (
+    export_to_json as export_knowledge_json,
+)
+from research_agent.knowledge.io import (
+    export_to_markdown as export_knowledge_markdown,
+)
+from research_agent.knowledge.io import (
+    import_from_json as import_knowledge_json,
+)
+from research_agent.knowledge.service import KnowledgeService
+from research_agent.knowledge.store import KnowledgeStore as ResearchKnowledgeStore
+from research_agent.mcp.serve import (
+    benchmark_tool_latency,
+    run_sse_server,
+    run_stdio_server,
+)
+from research_agent.mcp.server import MCPServer
 from research_agent.plan_editor import edit_plan_in_editor, edit_plan_inline
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -37,6 +76,15 @@ app = typer.Typer(
     help="Crash-resilient deep research agent for the Apps That Build Apps ecosystem.",
     no_args_is_help=True,
 )
+knowledge_app = typer.Typer(help="Knowledge graph, synthesis, and export commands.")
+projects_app = typer.Typer(help="AgentPrompts project registry commands.")
+template_app = typer.Typer(help="AgentPrompts RESEARCH_PROMPT templates.")
+mcp_app = typer.Typer(help="MCP protocol server and diagnostics.")
+
+app.add_typer(knowledge_app, name="knowledge")
+app.add_typer(projects_app, name="projects")
+app.add_typer(template_app, name="template")
+app.add_typer(mcp_app, name="mcp")
 
 
 # ---------------------------------------------------------------------------
@@ -226,9 +274,7 @@ def _handle_plan_review(
             }
             for sq in edited.subtopics
         ]
-        console.print(
-            f"[green]Plan updated ({len(subtopics)} sub-questions).[/green]"
-        )
+        console.print(f"[green]Plan updated ({len(subtopics)} sub-questions).[/green]")
         _display_plan(subtopics)
 
 
@@ -249,6 +295,43 @@ def _display_error_with_resume(
             "\nTo resume this run:\n"
             "  [bold]research-agent resume --dir data/checkpoints[/bold]\n"
         )
+
+
+def _parse_focus_areas(raw: str) -> set[OpportunityCategory]:
+    """Parse comma-delimited focus area text to enum values."""
+    if not raw.strip():
+        return set()
+
+    valid = {item.value: item for item in OpportunityCategory}
+    result: set[OpportunityCategory] = set()
+    unknown: list[str] = []
+
+    for part in raw.split(","):
+        key = part.strip().lower()
+        if not key:
+            continue
+        item = valid.get(key)
+        if item is None:
+            unknown.append(key)
+            continue
+        result.add(item)
+
+    if unknown:
+        joined = ", ".join(sorted(unknown))
+        valid_values = ", ".join(sorted(valid))
+        raise typer.BadParameter(
+            f"Unknown focus area(s): {joined}. Valid values: {valid_values}"
+        )
+
+    return result
+
+
+def _knowledge_store_path(settings: Settings) -> Path:
+    return Path(settings.vector_store.persist_directory) / "knowledge.json"
+
+
+DEFAULT_PROJECTS_DIR = Path("~/Desktop/Projects/_@agent-prompts").expanduser()
+DEFAULT_REGISTRY_PATH = Path("./data/agentprompts-projects.json")
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +650,841 @@ def evaluate(
     console.print(
         "[yellow]Full evaluation requires the evaluation framework (Phase 7).[/yellow]"
     )
+
+
+@app.command()
+def doctor(
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+    no_api_probes: Annotated[
+        bool,
+        typer.Option(
+            "--no-api-probes",
+            help="Skip external API probe calls (offline mode).",
+        ),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", help="Suppress table output, use exit code only."),
+    ] = False,
+) -> None:
+    """Run self-diagnostics and health checks for this environment."""
+    settings = _load_settings(config)
+    report = run_doctor(
+        settings=settings,
+        config_path=config,
+        check_api_probes=not no_api_probes,
+    )
+
+    if not quiet:
+        table = Table(title="Research Agent Doctor", show_lines=True)
+        table.add_column("Check", style="cyan")
+        table.add_column("Status", justify="center")
+        table.add_column("Message")
+
+        status_style = {
+            CheckStatus.OK: "[green]OK[/green]",
+            CheckStatus.WARN: "[yellow]WARN[/yellow]",
+            CheckStatus.FAIL: "[red]FAIL[/red]",
+        }
+
+        for check in report.checks:
+            table.add_row(
+                check.name,
+                status_style[check.status],
+                check.message,
+            )
+        console.print(table)
+
+        for check in report.checks:
+            if check.details:
+                details = ", ".join(f"{k}={v}" for k, v in check.details.items())
+                console.print(f"[dim]{check.name}: {details}[/dim]")
+
+    raise typer.Exit(code=report.exit_code)
+
+
+@app.command()
+def enhance(
+    project: Annotated[
+        Path,
+        typer.Option(
+            "--project",
+            help="Path to the project to analyze for enhancement opportunities.",
+        ),
+    ],
+    focus: Annotated[
+        str,
+        typer.Option(
+            "--focus",
+            help="Comma-separated focus categories (security,performance,testing,documentation,architecture,dependencies).",
+        ),
+    ] = "",
+    stale_days: Annotated[
+        int,
+        typer.Option(
+            "--stale-days",
+            help="Skip topics researched within this many days unless force refreshed.",
+        ),
+    ] = 14,
+    force_refresh: Annotated[
+        bool,
+        typer.Option(
+            "--force-refresh",
+            help="Re-research all topics regardless of staleness.",
+        ),
+    ] = False,
+    apply_to: Annotated[
+        Path | None,
+        typer.Option(
+            "--apply-to",
+            help="Optional file path to also write enhancement recommendations into.",
+        ),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Optional path for generated COMPILED_RESEARCH markdown.",
+        ),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Analyze a codebase and generate enhancement-focused research output."""
+    settings = _load_settings(config)
+    project_path = project.expanduser().resolve()
+    if not project_path.exists():
+        raise typer.BadParameter(f"Project path does not exist: {project_path}")
+
+    focus_areas = _parse_focus_areas(focus)
+    context = build_project_context(project_path)
+    opportunities = identify_opportunities(
+        context,
+        focus_areas=focus_areas or None,
+    )
+
+    knowledge_path = Path(settings.vector_store.persist_directory) / "enhancement.json"
+    store = EnhancementKnowledgeStore(knowledge_path)
+    refresh_targets, delta, shared_entries = plan_incremental_research(
+        project_id=context.project_name,
+        opportunities=opportunities,
+        store=store,
+        stale_days=max(stale_days, 1),
+        force_refresh=force_refresh,
+    )
+
+    if refresh_targets:
+        persist_findings(context.project_name, refresh_targets, store)
+
+    report_targets = refresh_targets or opportunities
+    report = generate_enhancement_report(
+        context=context,
+        opportunities=report_targets,
+        delta=delta,
+        shared_entries=shared_entries,
+    )
+
+    output_path = output or (project_path / "COMPILED_RESEARCH.md")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(report, encoding="utf-8")
+
+    if apply_to is not None:
+        apply_to.parent.mkdir(parents=True, exist_ok=True)
+        apply_to.write_text(report, encoding="utf-8")
+
+    console.print(
+        Panel(
+            f"Project: [cyan]{context.project_name}[/cyan]\n"
+            f"Focus: {focus or 'all categories'}\n"
+            f"Opportunities researched: {len(report_targets)}\n"
+            f"Output: [green]{output_path}[/green]",
+            title="Enhancement Research",
+            border_style="magenta",
+        )
+    )
+
+
+@app.command(name="for-project")
+def for_project(
+    project_name: Annotated[
+        str,
+        typer.Argument(help="AgentPrompts project name."),
+    ],
+    projects_dir: Annotated[
+        Path,
+        typer.Option(
+            "--projects-dir",
+            help="Root directory that contains AgentPrompts project folders.",
+        ),
+    ] = DEFAULT_PROJECTS_DIR,
+    registry_path: Annotated[
+        Path,
+        typer.Option(
+            "--registry-path",
+            help="Path to persistent project-name registry JSON.",
+        ),
+    ] = DEFAULT_REGISTRY_PATH,
+) -> None:
+    """Generate COMPILED_RESEARCH.md for a project in the AgentPrompts ecosystem."""
+    resolved_projects_dir = projects_dir.expanduser().resolve()
+    registry = ProjectRegistry(registry_path.expanduser().resolve())
+    registry.discover_and_register(resolved_projects_dir)
+
+    try:
+        result = run_for_project(
+            project_name=project_name,
+            projects_dir=resolved_projects_dir,
+            registry=registry,
+        )
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    console.print(
+        Panel(
+            f"Project: [cyan]{result.project_name}[/cyan]\n"
+            f"Path: {result.project_path}\n"
+            f"Output: [green]{result.output_path}[/green]\n"
+            f"Status file: {result.status_path}",
+            title="AgentPrompts Bridge",
+            border_style="blue",
+        )
+    )
+
+    if not result.quality_gate_passed:
+        err_console.print(
+            "[red]Quality gate failed. Missing sections:[/red] "
+            + ", ".join(result.missing_sections)
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def watch(
+    projects_dir: Annotated[
+        Path,
+        typer.Option(
+            "--projects-dir",
+            help="Root directory containing AgentPrompts projects.",
+        ),
+    ] = DEFAULT_PROJECTS_DIR,
+    registry_path: Annotated[
+        Path,
+        typer.Option(
+            "--registry-path",
+            help="Path to persistent project-name registry JSON.",
+        ),
+    ] = DEFAULT_REGISTRY_PATH,
+    debounce_seconds: Annotated[
+        float,
+        typer.Option(
+            "--debounce-seconds",
+            help="Minimum seconds between triggers for the same prompt file.",
+        ),
+    ] = 2.0,
+    poll_interval: Annotated[
+        float,
+        typer.Option("--poll-interval", help="Polling interval in seconds."),
+    ] = 1.0,
+    once: Annotated[
+        bool,
+        typer.Option(
+            "--once",
+            help="Run one scan iteration and exit (useful for validation).",
+        ),
+    ] = False,
+    no_notify: Annotated[
+        bool,
+        typer.Option(
+            "--no-notify",
+            help="Disable desktop notifications when research completes.",
+        ),
+    ] = False,
+) -> None:
+    """Watch RESEARCH_PROMPT.md files and auto-trigger research on changes."""
+    resolved_projects_dir = projects_dir.expanduser().resolve()
+    registry = ProjectRegistry(registry_path.expanduser().resolve())
+    registry.discover_and_register(resolved_projects_dir)
+
+    watcher = PromptWatcher(
+        projects_dir=resolved_projects_dir,
+        registry=registry,
+        debounce_seconds=max(debounce_seconds, 0.0),
+        poll_interval=max(poll_interval, 0.1),
+        notify=not no_notify,
+    )
+
+    def report_results(label: str, results: list[Any]) -> None:
+        if not results:
+            console.print(f"[dim]{label}: no prompt changes detected.[/dim]")
+            return
+        for item in results:
+            console.print(
+                f"[green]{label}:[/green] {item.project_name} -> {item.output_path}"
+            )
+
+    if once:
+        results = watcher.run_once()
+        report_results("Watch run", results)
+        if any(not item.quality_gate_passed for item in results):
+            raise typer.Exit(code=1)
+        return
+
+    console.print(
+        f"[cyan]Watching[/cyan] {resolved_projects_dir} "
+        f"(poll={poll_interval:.1f}s, debounce={debounce_seconds:.1f}s)"
+    )
+    try:
+        while True:
+            report_results("Triggered", watcher.run_once())
+            time.sleep(max(poll_interval, 0.1))
+    except KeyboardInterrupt:
+        console.print("[yellow]Watch stopped by user.[/yellow]")
+
+
+@projects_app.command("list")
+def projects_list(
+    projects_dir: Annotated[
+        Path,
+        typer.Option(
+            "--projects-dir",
+            help="Root directory containing AgentPrompts projects.",
+        ),
+    ] = DEFAULT_PROJECTS_DIR,
+    registry_path: Annotated[
+        Path,
+        typer.Option(
+            "--registry-path",
+            help="Path to persistent project-name registry JSON.",
+        ),
+    ] = DEFAULT_REGISTRY_PATH,
+) -> None:
+    """List registered AgentPrompts projects."""
+    resolved_projects_dir = projects_dir.expanduser().resolve()
+    registry = ProjectRegistry(registry_path.expanduser().resolve())
+    registry.discover_and_register(resolved_projects_dir)
+    projects = registry.list_projects()
+
+    table = Table(title="AgentPrompts Projects", show_lines=True)
+    table.add_column("Name", style="cyan")
+    table.add_column("Path")
+    if not projects:
+        console.print("[yellow]No projects registered.[/yellow]")
+        return
+    for name, path in projects:
+        table.add_row(name, str(path))
+    console.print(table)
+
+
+@projects_app.command("register")
+def projects_register(
+    name: Annotated[str, typer.Argument(help="Registry key for the project.")],
+    path: Annotated[Path, typer.Argument(help="Absolute or relative project path.")],
+    registry_path: Annotated[
+        Path,
+        typer.Option(
+            "--registry-path",
+            help="Path to persistent project-name registry JSON.",
+        ),
+    ] = DEFAULT_REGISTRY_PATH,
+) -> None:
+    """Register an AgentPrompts project path."""
+    project_path = path.expanduser().resolve()
+    if not project_path.exists():
+        raise typer.BadParameter(f"Path does not exist: {project_path}")
+    registry = ProjectRegistry(registry_path.expanduser().resolve())
+    registry.register(name, project_path)
+    console.print(f"[green]Registered[/green] {name} -> {project_path}")
+
+
+@template_app.command("list")
+def template_list(
+    custom_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--custom-dir",
+            help="Optional custom template directory containing *.md files.",
+        ),
+    ] = None,
+) -> None:
+    """List built-in and custom research templates."""
+    resolved_custom_dir = custom_dir.expanduser().resolve() if custom_dir else None
+    names = list_templates(resolved_custom_dir)
+    table = Table(title="Research Templates")
+    table.add_column("Template", style="cyan")
+    for name in names:
+        table.add_row(name)
+    console.print(table)
+
+
+@template_app.command("use")
+def template_use(
+    template_name: Annotated[
+        str,
+        typer.Argument(help="Template name (built-in or custom file stem)."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output file path (typically RESEARCH_PROMPT.md).",
+        ),
+    ] = Path("RESEARCH_PROMPT.md"),
+    project_name: Annotated[
+        str,
+        typer.Option("--project-name", help="Value for {{PROJECT_NAME}}."),
+    ] = "my-project",
+    language: Annotated[
+        str,
+        typer.Option("--language", help="Value for {{LANGUAGE}}."),
+    ] = "python",
+    focus_area: Annotated[
+        str,
+        typer.Option("--focus-area", help="Value for {{FOCUS_AREA}}."),
+    ] = "architecture",
+    custom_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--custom-dir",
+            help="Optional custom template directory containing *.md files.",
+        ),
+    ] = None,
+) -> None:
+    """Render a template to RESEARCH_PROMPT.md format."""
+    resolved_custom_dir = custom_dir.expanduser().resolve() if custom_dir else None
+    template_text = load_template(template_name, resolved_custom_dir)
+    rendered = render_template(
+        template_text,
+        {
+            "PROJECT_NAME": project_name,
+            "LANGUAGE": language,
+            "FOCUS_AREA": focus_area,
+        },
+    )
+    output_path = output.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(rendered, encoding="utf-8")
+    console.print(f"[green]Template written:[/green] {output_path}")
+
+
+@mcp_app.command("serve")
+def mcp_serve(
+    transport: Annotated[
+        str,
+        typer.Option(
+            "--transport",
+            help="MCP transport: stdio or sse.",
+        ),
+    ] = "stdio",
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Host for SSE transport."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", help="Port for SSE transport."),
+    ] = 8765,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Serve the MCP protocol over stdio or SSE transport."""
+    normalized = transport.strip().lower()
+    if normalized not in {"stdio", "sse"}:
+        raise typer.BadParameter("Transport must be 'stdio' or 'sse'.")
+
+    settings = _load_settings(config)
+    if normalized == "stdio":
+        run_stdio_server(settings)
+        return
+
+    run_sse_server(settings, host=host, port=port)
+
+
+@mcp_app.command("benchmark")
+def mcp_benchmark(
+    query: Annotated[
+        str,
+        typer.Option(
+            "--query",
+            help="Query used for MCP research tool latency benchmark.",
+        ),
+    ] = "vector database tradeoffs",
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Benchmark MCP research tool latency to first result."""
+    settings = _load_settings(config)
+    server = MCPServer(settings)
+    result = benchmark_tool_latency(server, query=query)
+
+    table = Table(title="MCP Benchmark")
+    table.add_column("Query", style="cyan")
+    table.add_column("Session ID")
+    table.add_column("Latency (ms)", justify="right")
+    table.add_row(
+        str(result["query"]),
+        str(result["session_id"]),
+        f"{float(result['latency_ms']):.2f}",
+    )
+    console.print(table)
+
+
+@knowledge_app.command("summarize")
+def knowledge_summarize(
+    topic: Annotated[
+        str | None,
+        typer.Option("--topic", help="Optional topic filter."),
+    ] = None,
+    threshold: Annotated[
+        float,
+        typer.Option(
+            "--threshold",
+            help="Refresh trigger threshold used in summary diagnostics.",
+        ),
+    ] = 0.45,
+    refresh_days: Annotated[
+        int,
+        typer.Option(
+            "--refresh-days",
+            help="Default refresh cadence in days used in diagnostics.",
+        ),
+    ] = 30,
+    mermaid_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--mermaid-out",
+            help="Optional output path for Mermaid relationship graph.",
+        ),
+    ] = None,
+    graph_json_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--graph-json-out",
+            help="Optional output path for JSON graph export.",
+        ),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Summarize consolidated knowledge and confidence status."""
+    settings = _load_settings(config)
+    store = ResearchKnowledgeStore(_knowledge_store_path(settings))
+    service = KnowledgeService(store)
+
+    relationship_count = service.rebuild_relationships(topic)
+    summary = service.summarize(
+        topic=topic,
+        threshold=max(0.0, min(1.0, threshold)),
+        refresh_days=max(1, refresh_days),
+    )
+
+    table = Table(title="Knowledge Summary", show_lines=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value")
+    table.add_row("Findings", str(len(summary.findings)))
+    table.add_row("Conflicts", str(len(summary.conflicts)))
+    table.add_row("Due for refresh", str(len(summary.due_for_refresh_ids)))
+    table.add_row("Relationships", str(relationship_count))
+    console.print(table)
+
+    if summary.cluster_summaries:
+        console.print("[bold]Cluster Summaries[/bold]")
+        for cluster, text in summary.cluster_summaries.items():
+            console.print(f"[cyan]{cluster}[/cyan]\n{text}")
+
+    if mermaid_out is not None:
+        mermaid_text = service.to_mermaid(topic)
+        mermaid_path = mermaid_out.expanduser().resolve()
+        mermaid_path.parent.mkdir(parents=True, exist_ok=True)
+        mermaid_path.write_text(mermaid_text + "\n", encoding="utf-8")
+        console.print(f"[green]Mermaid graph written:[/green] {mermaid_path}")
+
+    if graph_json_out is not None:
+        graph_payload = service.to_json_graph(topic)
+        graph_path = graph_json_out.expanduser().resolve()
+        graph_path.parent.mkdir(parents=True, exist_ok=True)
+        graph_path.write_text(json.dumps(graph_payload, indent=2), encoding="utf-8")
+        console.print(f"[green]JSON graph written:[/green] {graph_path}")
+
+
+@knowledge_app.command("refresh")
+def knowledge_refresh(
+    topic: Annotated[
+        str,
+        typer.Option("--topic", help='Topic to refresh (e.g., "AI news").'),
+    ],
+    threshold: Annotated[
+        float,
+        typer.Option("--threshold", help="Refresh trigger confidence threshold."),
+    ] = 0.45,
+    refresh_days: Annotated[
+        int,
+        typer.Option("--refresh-days", help="Refresh schedule in days for this topic."),
+    ] = 30,
+    statement: Annotated[
+        str | None,
+        typer.Option(
+            "--statement",
+            help="Optional replacement statement for refreshed findings.",
+        ),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Refresh decayed or stale knowledge findings for a topic."""
+    settings = _load_settings(config)
+    store = ResearchKnowledgeStore(_knowledge_store_path(settings))
+    service = KnowledgeService(store)
+    refreshed = service.refresh_topic(
+        topic=topic,
+        threshold=max(0.0, min(1.0, threshold)),
+        refresh_days=max(1, refresh_days),
+        new_statement=statement,
+    )
+    service.rebuild_relationships(topic)
+    console.print(
+        f"[green]Refreshed findings:[/green] {refreshed} for topic '{topic}'."
+    )
+
+
+@knowledge_app.command("query")
+def knowledge_query(
+    topic: Annotated[str, typer.Argument(help="Topic phrase to query.")],
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Query known findings and relationships for a topic."""
+    settings = _load_settings(config)
+    store = ResearchKnowledgeStore(_knowledge_store_path(settings))
+    service = KnowledgeService(store)
+    if not store.load().relationships:
+        service.rebuild_relationships()
+
+    result = service.query_topic(topic)
+    console.print(Panel(topic, title="Knowledge Query", border_style="cyan"))
+
+    if result["findings"]:
+        console.print("[bold]Findings[/bold]")
+        for line in result["findings"]:
+            console.print(f"- {line}")
+    else:
+        console.print("[yellow]No findings matched this topic.[/yellow]")
+
+    if result["relationships"]:
+        console.print("[bold]Relationships[/bold]")
+        for rel in result["relationships"]:
+            console.print(f"- {rel}")
+
+
+@knowledge_app.command("export")
+def knowledge_export(
+    output: Annotated[
+        Path,
+        typer.Argument(help="Destination export file (.json or .md)."),
+    ],
+    export_format: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Export format: json or md.",
+        ),
+    ] = "json",
+    topic: Annotated[
+        str | None,
+        typer.Option("--topic", help="Optional topic filter."),
+    ] = None,
+    date_from: Annotated[
+        str | None,
+        typer.Option("--date-from", help="ISO timestamp lower bound."),
+    ] = None,
+    date_to: Annotated[
+        str | None,
+        typer.Option("--date-to", help="ISO timestamp upper bound."),
+    ] = None,
+    min_confidence: Annotated[
+        float,
+        typer.Option("--min-confidence", help="Minimum confidence threshold."),
+    ] = 0.0,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Export knowledge base with optional selective filters."""
+    normalized_format = export_format.strip().lower()
+    if normalized_format not in {"json", "md"}:
+        raise typer.BadParameter("Format must be 'json' or 'md'.")
+
+    settings = _load_settings(config)
+    store = ResearchKnowledgeStore(_knowledge_store_path(settings))
+    payload = store.export_filtered(
+        topic=topic,
+        date_from=date_from,
+        date_to=date_to,
+        min_confidence=max(0.0, min(1.0, min_confidence)),
+    )
+
+    output_path = output.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if normalized_format == "json":
+        export_knowledge_json(output_path, payload)
+    else:
+        output_path.write_text(export_knowledge_markdown(payload), encoding="utf-8")
+
+    console.print(f"[green]Knowledge exported:[/green] {output_path}")
+
+
+@knowledge_app.command("import")
+def knowledge_import(
+    source: Annotated[
+        Path,
+        typer.Argument(help="Knowledge export JSON file to import."),
+    ],
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Import knowledge payload and merge with conflict resolution."""
+    source_path = source.expanduser().resolve()
+    if not source_path.exists():
+        raise typer.BadParameter(f"Import file not found: {source_path}")
+
+    settings = _load_settings(config)
+    store = ResearchKnowledgeStore(_knowledge_store_path(settings))
+    payload = import_knowledge_json(source_path)
+    summary = store.import_payload(payload)
+
+    service = KnowledgeService(store)
+    relationship_count = service.rebuild_relationships()
+
+    console.print(
+        Panel(
+            f"Merged findings: {summary['merged']}\n"
+            f"Conflicts resolved: {summary['conflicts']}\n"
+            f"Relationships rebuilt: {relationship_count}",
+            title="Knowledge Import",
+            border_style="green",
+        )
+    )
+
+
+@app.command()
+def serve(
+    port: Annotated[
+        int,
+        typer.Option("--port", help="Port to bind the FastAPI server."),
+    ] = 8000,
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Host/interface to bind the FastAPI server."),
+    ] = "0.0.0.0",
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Run the research-agent FastAPI server."""
+    settings = _load_settings(
+        config,
+        api={"enabled": True, "port": port, "host": host},
+    )
+    run_server(settings)
+
+
+@app.command(name="api-keys")
+def api_keys(
+    create: Annotated[
+        str | None,
+        typer.Option(
+            "--create", help="Create a new API key with the given display name."
+        ),
+    ] = None,
+    admin: Annotated[
+        bool,
+        typer.Option("--admin", help="Mark newly-created API key as admin."),
+    ] = False,
+    revoke: Annotated[
+        str | None,
+        typer.Option("--revoke", help="Revoke an API key by key id."),
+    ] = None,
+    show: Annotated[
+        bool,
+        typer.Option("--list", help="List API keys and usage stats."),
+    ] = False,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Path to config YAML file."),
+    ] = None,
+) -> None:
+    """Generate, revoke, and list API keys for API authentication."""
+    settings = _load_settings(config)
+    store = APIKeyStore(Path(settings.api.api_key_file))
+
+    actions = sum(1 for value in [bool(create), bool(revoke), show] if value)
+    if actions > 1:
+        raise typer.BadParameter(
+            "Use only one action at a time: --create, --revoke, or --list."
+        )
+
+    if create:
+        record = store.create_key(name=create, admin=admin)
+        console.print(
+            Panel(
+                f"ID: [cyan]{record.id}[/cyan]\n"
+                f"Admin: {record.admin}\n"
+                f"Key: [green]{record.key}[/green]",
+                title="API Key Created",
+                border_style="green",
+            )
+        )
+        return
+
+    if revoke:
+        if not store.revoke_key(revoke):
+            raise typer.BadParameter(f"API key not found: {revoke}")
+        console.print(f"[green]Revoked API key:[/green] {revoke}")
+        return
+
+    table = Table(title="API Keys", show_lines=True)
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Admin")
+    table.add_column("Revoked")
+    table.add_column("Requests", justify="right")
+    table.add_column("Sessions", justify="right")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Cost", justify="right")
+
+    for record in store.list_keys():
+        table.add_row(
+            record.id,
+            record.name,
+            str(record.admin),
+            str(record.revoked),
+            str(record.requests),
+            str(record.sessions_started),
+            str(record.tokens_used),
+            f"${record.cost_usd:.4f}",
+        )
+
+    console.print(table)
 
 
 @app.command()

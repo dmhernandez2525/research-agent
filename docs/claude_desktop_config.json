@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "research-agent": {
+      "command": "uv",
+      "args": ["run", "research-agent", "mcp", "serve"]
+    }
+  }
+}
