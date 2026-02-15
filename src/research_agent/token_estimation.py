@@ -7,7 +7,9 @@ caching for repeated content, and actual-vs-estimated tracking.
 from __future__ import annotations
 
 import functools
-from typing import Any
+import re
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 import structlog
 import tiktoken
@@ -33,6 +35,28 @@ _MODEL_ENCODING_MAP: dict[str, str] = {
 _DEFAULT_ENCODING = "cl100k_base"
 
 
+class TokenizerLike(Protocol):
+    """Minimal tokenizer contract used by this module."""
+
+    name: str
+
+    def encode(self, text: str) -> list[int]:
+        """Encode text into token IDs."""
+
+
+@dataclass(slots=True)
+class _FallbackTokenizer:
+    """Offline-safe fallback tokenizer used when tiktoken assets are unavailable."""
+
+    name: str
+
+    def encode(self, text: str) -> list[int]:
+        if not text:
+            return []
+        parts = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
+        return list(range(len(parts)))
+
+
 def _encoding_for_model(model: str) -> str:
     """Determine the tiktoken encoding name for a model.
 
@@ -49,7 +73,7 @@ def _encoding_for_model(model: str) -> str:
 
 
 @functools.lru_cache(maxsize=8)
-def get_tokenizer(model: str = "") -> tiktoken.Encoding:
+def get_tokenizer(model: str = "") -> TokenizerLike:
     """Return the tiktoken tokenizer for a model, cached for reuse.
 
     Args:
@@ -59,7 +83,15 @@ def get_tokenizer(model: str = "") -> tiktoken.Encoding:
         A tiktoken Encoding instance.
     """
     encoding_name = _encoding_for_model(model) if model else _DEFAULT_ENCODING
-    return tiktoken.get_encoding(encoding_name)
+    try:
+        return tiktoken.get_encoding(encoding_name)
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        logger.warning(
+            "tokenizer_fallback_enabled",
+            encoding=encoding_name,
+            error=str(exc),
+        )
+        return _FallbackTokenizer(name=f"{encoding_name}-fallback")
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +242,7 @@ class TokenEstimationTracker:
         """
         if not self._records:
             return 0.0
-        total = sum(
-            self._error_pct(r["estimated"], r["actual"])
-            for r in self._records
-        )
+        total = sum(self._error_pct(r["estimated"], r["actual"]) for r in self._records)
         return total / len(self._records)
 
     @property
@@ -226,8 +255,7 @@ class TokenEstimationTracker:
         if not self._records:
             return 0.0
         total = sum(
-            abs(self._error_pct(r["estimated"], r["actual"]))
-            for r in self._records
+            abs(self._error_pct(r["estimated"], r["actual"])) for r in self._records
         )
         return total / len(self._records)
 

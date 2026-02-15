@@ -51,4 +51,15 @@ class SSETransportBuffer:
         """Return buffered events for SSE replay or catch-up."""
         if last_event_id is None:
             return list(self._events)
-        return [event for event in self._events if int(event["id"]) > last_event_id]
+        return [
+            event for event in self._events if self._event_id(event) > last_event_id
+        ]
+
+    @staticmethod
+    def _event_id(event: dict[str, object]) -> int:
+        raw = event.get("id")
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str) and raw.isdigit():
+            return int(raw)
+        return 0
