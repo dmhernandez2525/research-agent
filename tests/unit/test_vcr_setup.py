@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 import os
+import socket
 from typing import TYPE_CHECKING, Any
 
+import pytest
 import vcr
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 from tests.conftest import CASSETTE_DIR, FILTERED_HEADERS
+
+
+def _dns_available(host: str) -> bool:
+    try:
+        socket.getaddrinfo(host, 443)
+        return True
+    except OSError:
+        return False
+
+
+_HTTPBIN_AVAILABLE = _dns_available("httpbin.org")
 
 # ---------------------------------------------------------------------------
 # Cassette directory
@@ -85,6 +98,10 @@ class TestVcrConfig:
 class TestCassetteRecordReplay:
     """VCR cassettes can record and replay HTTP interactions."""
 
+    @pytest.mark.skipif(
+        not _HTTPBIN_AVAILABLE,
+        reason="Network unavailable for live VCR cassette recording tests.",
+    )
     def test_record_and_replay(self, tmp_path: Path) -> None:
         """Verify a cassette records and replays correctly."""
         cassette_path = tmp_path / "test_cassette.yaml"
@@ -113,6 +130,10 @@ class TestCassetteRecordReplay:
 
         assert recorded_data["url"] == replayed_data["url"]
 
+    @pytest.mark.skipif(
+        not _HTTPBIN_AVAILABLE,
+        reason="Network unavailable for live VCR cassette recording tests.",
+    )
     def test_header_filtering(self, tmp_path: Path) -> None:
         """Verify sensitive headers are stripped from recorded request headers."""
         import yaml
