@@ -36,17 +36,14 @@ def create_sse_app(settings: Settings) -> FastAPI:
     buffer = SSETransportBuffer(max_events=500)
     app = FastAPI(title="research-agent MCP", version="0.1.0")
 
-    @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/mcp/request")
     async def request_endpoint(payload: dict[str, object]) -> dict[str, object]:
         response = server.handle_request(payload)
         buffer.publish(response)
         return response
 
-    @app.get("/mcp/events")
     async def events(
         request: Request,
         last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
@@ -69,6 +66,10 @@ def create_sse_app(settings: Settings) -> FastAPI:
                 await asyncio.sleep(0.25)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
+
+    app.add_api_route("/health", health, methods=["GET"])
+    app.add_api_route("/mcp/request", request_endpoint, methods=["POST"])
+    app.add_api_route("/mcp/events", events, methods=["GET"])
 
     return app
 

@@ -63,21 +63,21 @@ class MCPToolRegistry:
     def call_tool(self, payload: MCPToolCallParams) -> dict[str, Any]:
         """Execute a tool and return serialized output."""
         if payload.name == "research":
-            result = self._run_research(
+            return self._run_research(
                 ResearchToolInput.model_validate(payload.arguments)
-            )
-            return result.model_dump()
+            ).model_dump()
         if payload.name == "recall":
-            result = self._run_recall(RecallToolInput.model_validate(payload.arguments))
-            return result.model_dump()
+            return self._run_recall(
+                RecallToolInput.model_validate(payload.arguments)
+            ).model_dump()
         if payload.name == "evaluate":
-            result = self._run_evaluate(
+            return self._run_evaluate(
                 EvaluateToolInput.model_validate(payload.arguments)
-            )
-            return result.model_dump()
+            ).model_dump()
         if payload.name == "status":
-            result = self._run_status(StatusToolInput.model_validate(payload.arguments))
-            return result.model_dump()
+            return self._run_status(
+                StatusToolInput.model_validate(payload.arguments)
+            ).model_dump()
         raise ValueError(f"Unknown tool: {payload.name}")
 
     def _run_research(self, payload: ResearchToolInput) -> ResearchToolOutput:
