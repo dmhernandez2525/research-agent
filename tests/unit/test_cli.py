@@ -56,6 +56,9 @@ class TestVersionAndHelp:
         assert "run" in result.output
         assert "resume" in result.output
         assert "evaluate" in result.output
+        assert "enhance" in result.output
+        assert "serve" in result.output
+        assert "api-keys" in result.output
         assert "clean" in result.output
 
     def test_run_help(self) -> None:
@@ -83,6 +86,23 @@ class TestVersionAndHelp:
         assert "--checkpoints" in result.output
         assert "--cache" in result.output
         assert "--all" in result.output
+
+    def test_enhance_help(self) -> None:
+        result = runner.invoke(app, ["enhance", "--help"])
+        assert result.exit_code == 0
+        assert "--project" in result.output
+        assert "--focus" in result.output
+
+    def test_serve_help(self) -> None:
+        result = runner.invoke(app, ["serve", "--help"])
+        assert result.exit_code == 0
+        assert "--port" in result.output
+
+    def test_api_keys_help(self) -> None:
+        result = runner.invoke(app, ["api-keys", "--help"])
+        assert result.exit_code == 0
+        assert "--create" in result.output
+        assert "--revoke" in result.output
 
 
 # ---- Run command -------------------------------------------------------------
@@ -348,6 +368,53 @@ class TestEvaluateCommand:
         assert "Evaluation" in result.output
 
 
+class TestAPIKeysCommand:
+    """The `api-keys` command behavior."""
+
+    @patch("research_agent.cli._load_settings")
+    def test_create_list_and_revoke(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        settings = MagicMock()
+        settings.api.api_key_file = tmp_path / "keys.json"
+        mock_settings.return_value = settings
+
+        created = runner.invoke(app, ["api-keys", "--create", "test-key"])
+        assert created.exit_code == 0
+        assert "API Key Created" in created.output
+
+        listed = runner.invoke(app, ["api-keys", "--list"])
+        assert listed.exit_code == 0
+        assert "API Keys" in listed.output
+        assert "test-k" in listed.output
+
+        from research_agent.api.auth import APIKeyStore
+
+        store = APIKeyStore(settings.api.api_key_file)
+        key_id = store.list_keys()[0].id
+        revoked = runner.invoke(app, ["api-keys", "--revoke", key_id])
+        assert revoked.exit_code == 0
+        assert "Revoked API key" in revoked.output
+
+
+class TestServeCommand:
+    """The `serve` command behavior."""
+
+    @patch("research_agent.cli.run_server")
+    @patch("research_agent.cli._load_settings")
+    def test_serve_invokes_uvicorn_runner(
+        self,
+        mock_settings: MagicMock,
+        mock_run_server: MagicMock,
+    ) -> None:
+        settings = MagicMock()
+        mock_settings.return_value = settings
+
+        result = runner.invoke(app, ["serve", "--port", "9001"])
+        assert result.exit_code == 0
+        mock_run_server.assert_called_once_with(settings)
+
+
 # ---- Signal handler ----------------------------------------------------------
 
 
@@ -561,19 +628,13 @@ class TestHandlePlanReviewEdit:
                 EditableSubQuestion(
                     id=1, question="What is RAG architecture?", rationale="Updated"
                 ),
-                EditableSubQuestion(
-                    id=2, question="New subtopic", rationale="Added"
-                ),
+                EditableSubQuestion(id=2, question="New subtopic", rationale="Added"),
             ]
         )
 
         with (
-            patch(
-                "research_agent.cli._approve_plan", side_effect=["edit", "approve"]
-            ),
-            patch(
-                "research_agent.cli.edit_plan_in_editor", return_value=edited_plan
-            ),
+            patch("research_agent.cli._approve_plan", side_effect=["edit", "approve"]),
+            patch("research_agent.cli.edit_plan_in_editor", return_value=edited_plan),
         ):
             result = _handle_plan_review(subtopics)
 
@@ -598,9 +659,7 @@ class TestHandlePlanReviewEdit:
         )
 
         with (
-            patch(
-                "research_agent.cli._approve_plan", side_effect=["edit", "approve"]
-            ),
+            patch("research_agent.cli._approve_plan", side_effect=["edit", "approve"]),
             patch("research_agent.cli.edit_plan_in_editor", return_value=None),
             patch("research_agent.cli.edit_plan_inline", return_value=inline_plan),
         ):
@@ -618,9 +677,7 @@ class TestHandlePlanReviewEdit:
         ]
 
         with (
-            patch(
-                "research_agent.cli._approve_plan", side_effect=["edit", "cancel"]
-            ),
+            patch("research_agent.cli._approve_plan", side_effect=["edit", "cancel"]),
             patch("research_agent.cli.edit_plan_in_editor", return_value=None),
             patch("research_agent.cli.edit_plan_inline", return_value=None),
         ):
@@ -691,9 +748,7 @@ class TestRunCommandOutputPath:
 
         mock_compile.side_effect = set_report
 
-        result = runner.invoke(
-            app, ["run", "test query", "--output", str(out_dir)]
-        )
+        result = runner.invoke(app, ["run", "test query", "--output", str(out_dir)])
         assert result.exit_code == 0
         assert "Report saved" in result.output
 
@@ -722,9 +777,7 @@ class TestResumeVerbose:
         run_dir.mkdir(parents=True)
 
         mgr = CheckpointManager(directory=run_dir)
-        mgr.save(
-            "run-test456-step-1", {"query": "test", "step": "plan"}, step_index=1
-        )
+        mgr.save("run-test456-step-1", {"query": "test", "step": "plan"}, step_index=1)
 
         settings = MagicMock()
         settings.checkpoints.directory = cp_dir
@@ -733,9 +786,7 @@ class TestResumeVerbose:
         mock_settings.return_value = settings
 
         with patch("research_agent.graph.compile_graph", return_value=MagicMock()):
-            result = runner.invoke(
-                app, ["resume", "--dir", str(cp_dir), "--verbose"]
-            )
+            result = runner.invoke(app, ["resume", "--dir", str(cp_dir), "--verbose"])
 
         assert result.exit_code == 0
         # _load_settings is called twice: once for resume, once for run.
@@ -798,9 +849,7 @@ class TestRunResumeWithCheckpoint:
 
         settings.checkpoints.directory = tmp_path / "cp"
 
-        with patch(
-            "research_agent.cli.generate_run_id", return_value=run_id
-        ):
+        with patch("research_agent.cli.generate_run_id", return_value=run_id):
             result = runner.invoke(app, ["run", "resumable query", "--resume"])
 
         assert result.exit_code == 0
